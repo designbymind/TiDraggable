@@ -64,7 +64,6 @@
 
 @property (nonatomic, assign) TiViewProxy* proxy;
 @property (nonatomic, retain) UIGestureRecognizer* gesture;
-@property (nonatomic, retain) UIGestureRecognizer* longpress;
 @property (nonatomic, retain) id <TiDraggableGestureDelegate> delegate;
 
 typedef void (^CallbackBlock)(void);
