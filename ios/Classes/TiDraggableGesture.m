@@ -49,12 +49,10 @@
         
         // set GestureRecognizers
         self.gesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panDetected:)];
-        self.longpress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(longPressListener:)];
         isLognPressed = NO;
         
         // add delegates
         [self.gesture setDelegate:self];
-        [self.longpress setDelegate:self];
         self.delegate = delegate;
         
         [self.proxy setValue:self forKey:@"draggable"];
@@ -74,14 +72,12 @@
     if (! gestureIsAttached && [self.proxy viewReady])
     {
         [self.proxy.view addGestureRecognizer:self.gesture];
-        [self.proxy.view addGestureRecognizer:self.longpress];
     }
 }
 
 - (void)dealloc
 {
     RELEASE_TO_NIL(self.gesture);
-    RELEASE_TO_NIL(self.longpress);
 
     [super dealloc];
 }
@@ -137,62 +133,6 @@
 - (void)removeShadowToDraggedView:(TiViewProxy *)proxy
 {
     proxy.view.layer.shadowOpacity = 0;
-}
-
-
-
-// longpress listener
-- (void)longPressListener:(UILongPressGestureRecognizer *)gesture
-{
-    
-    if([TiUtils boolValue:[self valueForKey:@"enableOnLongpress"] def:NO] == YES)
-    {
-        
-        // get the view that is touched
-        TiViewProxy* panningProxy = (TiViewProxy*)[self.proxy.view proxy];
-        
-        float left = [panningProxy view].frame.origin.x;
-        float top = [panningProxy view].frame.origin.y;
-        
-        NSMutableDictionary *tiProps = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                                        [NSNumber numberWithFloat:left], @"left",
-                                        [NSNumber numberWithFloat:top], @"top",
-                                        [TiUtils pointToDictionary:self.proxy.view.center], @"center",
-                                        nil];
-        // What state are we in?
-        if(gesture.state == UIGestureRecognizerStateBegan)
-        {
-            isLognPressed = YES;
-            
-            [self checkAndFireEvent:panningProxy withName:@"start" withObject:tiProps];
-            
-            // show shadow
-            if([TiUtils boolValue:[self valueForKey:@"showShadowOnMove"] def:NO] == YES){
-                [self addShadowToDraggedView:panningProxy];
-            }
-        }
-        else if(gesture.state == UIGestureRecognizerStateChanged)
-        {
-            // nothing - let the pan gesture recognizer do the work
-        }
-        else if(gesture.state == UIGestureRecognizerStateEnded || gesture.state == UIGestureRecognizerStateCancelled)
-        {
-            isLognPressed = NO;
-            
-            [tiProps setValue:[NSDictionary dictionaryWithObjectsAndKeys:
-                               [NSNumber numberWithFloat:touchEnd.x - touchStart.x], @"x",
-                               [NSNumber numberWithFloat:touchEnd.y - touchStart.y], @"y",
-                               nil] forKey:@"distance"];
-            
-            [self checkAndFireEvent:panningProxy withName:([gesture state] == UIGestureRecognizerStateCancelled ? @"cancel" : @"end") withObject:tiProps];
-            
-            // hide shadow
-            if([TiUtils boolValue:[self valueForKey:@"showShadowOnMove"] def:NO] == YES){
-                [self removeShadowToDraggedView:panningProxy];
-            }
-        }
-    
-    }
 }
 
 - (void)panDetected:(UIPanGestureRecognizer *)panRecognizer
@@ -704,11 +644,6 @@
 # pragma UIGestureRecognizerDelegate
 
 -(BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
-    return YES;
-}
-
-// make sure the two GestureRecognizers can work together simultaneously
-- (BOOL)gestureRecognizer:(UIPanGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UILongPressGestureRecognizer *)otherGestureRecognizer {
     return YES;
 }
 
