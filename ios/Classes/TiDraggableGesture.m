@@ -194,6 +194,13 @@
         newCenter.x = newCenter.x;
         newCenter.y += translation.y;
     }
+    else if([[self valueForKey:@"axis"] isEqualToString:@"free"])
+    {
+        tmpTranslationY = translation.y;
+
+        newCenter.x = newCenter.x;
+        newCenter.y += translation.y;
+    }
     else
     {
         tmpTranslationX = translation.x;
