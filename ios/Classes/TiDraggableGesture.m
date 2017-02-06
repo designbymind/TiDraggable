@@ -196,9 +196,10 @@
     }
     else if([[self valueForKey:@"axis"] isEqualToString:@"free"])
     {
+        tmpTranslationX = translation.x;
         tmpTranslationY = translation.y;
-
-        newCenter.x = newCenter.x;
+        
+        newCenter.x += translation.x;
         newCenter.y += translation.y;
     }
     else
@@ -233,23 +234,23 @@
 
     LayoutConstraint* layoutProperties = [self.proxy layoutProperties];
 
-    if ([self valueForKey:@"axis"] == nil || [[self valueForKey:@"axis"] isEqualToString:@"x"])
+    if ([self valueForKey:@"axis"] == nil || [[self valueForKey:@"axis"] isEqualToString:@"free"] || [[self valueForKey:@"axis"] isEqualToString:@"y"])
+    {
+        layoutProperties->top = TiDimensionDip(newCenter.y - size.height / 2);
+        
+        if (ensureBottom)
+        {
+            layoutProperties->bottom = TiDimensionDip(layoutProperties->top.value * -1);
+        }
+    }
+    
+    if ([self valueForKey:@"axis"] == nil || [[self valueForKey:@"axis"] isEqualToString:@"free"] || [[self valueForKey:@"axis"] isEqualToString:@"x"])
     {
         layoutProperties->left = TiDimensionDip(newCenter.x - size.width / 2);
 
         if (ensureRight)
         {
             layoutProperties->right = TiDimensionDip(layoutProperties->left.value * -1);
-        }
-    }
-
-    if ([self valueForKey:@"axis"] == nil || [[self valueForKey:@"axis"] isEqualToString:@"y"])
-    {
-        layoutProperties->top = TiDimensionDip(newCenter.y - size.height / 2);
-
-        if (ensureBottom)
-        {
-            layoutProperties->bottom = TiDimensionDip(layoutProperties->top.value * -1);
         }
     }
 
