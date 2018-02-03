@@ -3,12 +3,11 @@
 # Appcelerator Titanium Module Packager
 #
 #
-import os, subprocess, sys, glob, string
+import os, sys, glob, string
 import zipfile
 from datetime import date
 
 cwd = os.path.abspath(os.path.dirname(sys._getframe(0).f_code.co_filename))
-os.chdir(cwd)
 required_module_keys = ['name','version','moduleid','description','copyright','license','copyright','platform','minsdk']
 module_defaults = {
 	'description':'My module',
@@ -17,10 +16,6 @@ module_defaults = {
 	'copyright' : 'Copyright (c) %s by Your Company' % str(date.today().year),
 }
 module_license_default = "TODO: place your license here and we'll include it in the module distribution"
-
-def find_sdk(config):
-	sdk = config['TITANIUM_SDK']
-	return os.path.expandvars(os.path.expanduser(sdk))
 
 def replace_vars(config,token):
 	idx = token.find('$(')
@@ -52,59 +47,47 @@ def generate_doc(config):
 	if not os.path.exists(docdir):
 		print "Couldn't find documentation file at: %s" % docdir
 		return None
-
-	try:
-		import markdown2 as markdown
-	except ImportError:
-		import markdown
+	sdk = config['TITANIUM_SDK']
+	support_dir = os.path.join(sdk,'module','support')
+	sys.path.append(support_dir)
+	import markdown2
 	documentation = []
 	for file in os.listdir(docdir):
-		if file in ignoreFiles or os.path.isdir(os.path.join(docdir, file)):
-			continue
 		md = open(os.path.join(docdir,file)).read()
-		html = markdown.markdown(md)
+		html = markdown2.markdown(md)
 		documentation.append({file:html});
 	return documentation
 
 def compile_js(manifest,config):
-	js_file = os.path.join(cwd,'assets','ti.draggable.js')
+	js_file = os.path.join(cwd,'assets','net.iamyellow.tiws.js')
 	if not os.path.exists(js_file): return
 
+	sdk = config['TITANIUM_SDK']
+	iphone_dir = os.path.join(sdk,'iphone')
+	sys.path.insert(0,iphone_dir)
 	from compiler import Compiler
-	try:
-		import json
-	except:
-		import simplejson as json
 
-	compiler = Compiler(cwd, manifest['moduleid'], manifest['name'], 'commonjs')
-	root_asset, module_assets = compiler.compile_module()
+	path = os.path.basename(js_file)
+	metadata = Compiler.make_function_from_file(path,js_file)
+	method = metadata['method']
+	eq = path.replace('.','_')
+	method = '  return %s;' % method
 
-	root_asset_content = """
-%s
+	f = os.path.join(cwd,'Classes','NetIamyellowTiwsModuleAssets.m')
+	c = open(f).read()
+	idx = c.find('return ')
+	before = c[0:idx]
+	after = """
+}
 
-	return filterDataInRange([NSData dataWithBytesNoCopy:data length:sizeof(data) freeWhenDone:NO], ranges[0]);
-""" % root_asset
+@end
+	"""
+	newc = before + method + after
 
-	module_asset_content = """
-%s
-
-	NSNumber *index = [map objectForKey:path];
-	if (index == nil) {
-		return nil;
-	}
-	return filterDataInRange([NSData dataWithBytesNoCopy:data length:sizeof(data) freeWhenDone:NO], ranges[index.integerValue]);
-""" % module_assets
-
-	from tools import splice_code
-
-	assets_router = os.path.join(cwd,'Classes','TiDraggableModuleAssets.m')
-	splice_code(assets_router, 'asset', root_asset_content)
-	splice_code(assets_router, 'resolve_asset', module_asset_content)
-
-	# Generate the exports after crawling all of the available JS source
-	exports = open('metadata.json','w')
-	json.dump({'exports':compiler.exports }, exports)
-	exports.close()
+	if newc!=c:
+		x = open(f,'w')
+		x.write(newc)
+		x.close()
 
 def die(msg):
 	print msg
@@ -114,8 +97,8 @@ def warn(msg):
 	print "[WARN] %s" % msg
 
 def validate_license():
-	c = open(os.path.join(cwd,'LICENSE')).read()
-	if c.find(module_license_default)!=-1:
+	c = open('LICENSE').read()
+	if c.find(module_license_default)!=1:
 		warn('please update the LICENSE file with your license text before distributing')
 
 def validate_manifest():
@@ -137,11 +120,10 @@ def validate_manifest():
 			if curvalue==defvalue: warn("please update the manifest key: '%s' to a non-default value" % key)
 	return manifest,path
 
-ignoreFiles = ['.DS_Store','.gitignore','libTitanium.a','titanium.jar','README']
+ignoreFiles = ['.DS_Store','.gitignore','libTitanium.a','titanium.jar','README','net.iamyellow.tiws.js']
 ignoreDirs = ['.DS_Store','.svn','.git','CVSROOT']
 
-def zip_dir(zf,dir,basepath,ignoreExt=[]):
-	if not os.path.exists(dir): return
+def zip_dir(zf,dir,basepath,ignore=[]):
 	for root, dirs, files in os.walk(dir):
 		for name in ignoreDirs:
 			if name in dirs:
@@ -149,22 +131,19 @@ def zip_dir(zf,dir,basepath,ignoreExt=[]):
 		for file in files:
 			if file in ignoreFiles: continue
 			e = os.path.splitext(file)
-			if len(e) == 2 and e[1] in ignoreExt: continue
+			if len(e)==2 and e[1]=='.pyc':continue
 			from_ = os.path.join(root, file)
-			to_ = from_.replace(dir, '%s/%s'%(basepath,dir), 1)
+			to_ = from_.replace(dir, basepath, 1)
 			zf.write(from_, to_)
 
 def glob_libfiles():
 	files = []
-	for libfile in glob.glob('build/**/*.a'):
+	for libfile in glob.glob('build/**/libNetIamyellowTiws.a'):
 		if libfile.find('Release-')!=-1:
 			files.append(libfile)
 	return files
 
 def build_module(manifest,config):
-	from tools import ensure_dev_path
-	ensure_dev_path()
-
 	rc = os.system("xcodebuild -sdk iphoneos -configuration Release")
 	if rc != 0:
 		die("xcodebuild failed")
@@ -176,8 +155,11 @@ def build_module(manifest,config):
 	libpaths = ''
 	for libfile in glob_libfiles():
 		libpaths+='%s ' % libfile
+		print libfile
 
 	os.system("lipo %s -create -output build/lib%s.a" %(libpaths,moduleid))
+	os.system("lipo -info build/lib%s.a" %moduleid)
+
 
 def package_module(manifest,mf,config):
 	name = manifest['name'].lower()
@@ -190,20 +172,11 @@ def package_module(manifest,mf,config):
 	zf.write(mf,'%s/manifest' % modulepath)
 	libname = 'lib%s.a' % moduleid
 	zf.write('build/%s' % libname, '%s/%s' % (modulepath,libname))
-	docs = generate_doc(config)
-	if docs!=None:
-		for doc in docs:
-			for file, html in doc.iteritems():
-				filename = string.replace(file,'.md','.html')
-				zf.writestr('%s/documentation/%s'%(modulepath,filename),html)
-	zip_dir(zf,'assets',modulepath,['.pyc','.js'])
-	zip_dir(zf,'example',modulepath,['.pyc'])
-	zip_dir(zf,'platform',modulepath,['.pyc','.js'])
+	for dn in ('assets','example'):
+	  if os.path.exists(dn):
+		  zip_dir(zf,dn,'%s/%s' % (modulepath,dn),['README'])
 	zf.write('LICENSE','%s/LICENSE' % modulepath)
 	zf.write('module.xcconfig','%s/module.xcconfig' % modulepath)
-	exports_file = 'metadata.json'
-	if os.path.exists(exports_file):
-		zf.write(exports_file, '%s/%s' % (modulepath, exports_file))
 	zf.close()
 
 
@@ -211,11 +184,6 @@ if __name__ == '__main__':
 	manifest,mf = validate_manifest()
 	validate_license()
 	config = read_ti_xcconfig()
-
-	sdk = find_sdk(config)
-	sys.path.insert(0,os.path.join(sdk,'iphone'))
-	sys.path.append(os.path.join(sdk, "common"))
-
 	compile_js(manifest,config)
 	build_module(manifest,config)
 	package_module(manifest,mf,config)
