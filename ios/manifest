@@ -1,4 +1,4 @@
-version: 2.1.2
+version: 2.2.0
 apiversion: 2
 architectures: armv7 i386 x86_64 arm64
 description: Ti.Draggable
@@ -10,4 +10,4 @@ name: draggable
 moduleid: ti.draggable
 guid: e8c13998-8fa8-4cee-8078-353c27e84d19
 platform: iphone
-minsdk: 3.5.1.GA
+minsdk: 7.0.1.GA
