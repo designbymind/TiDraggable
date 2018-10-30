@@ -1,4 +1,4 @@
-version: 2.1.2
+version: 2.2.0
 apiversion: 2
 architectures: armv7 i386 x86_64 arm64
 description: Ti.Draggable
