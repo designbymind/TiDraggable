@@ -38,7 +38,7 @@
 #import <objc/message.h>
 #import "TiDraggableModule.h"
 #import "TiDraggableGesture.h"
-#import "TiUINavigationWindowProxy.h"
+#import "TiUIiOSNavWindowProxy.h"
 
 @implementation TiDraggableModule
 
@@ -76,7 +76,7 @@
 
     if ([name isEqualToString:@"createNavigationWindow"])
     {
-        proxy = [[[TiUINavigationWindowProxy alloc] _initWithPageContext:[self executionContext] args:args] autorelease];
+        proxy = [[[TiUIiOSNavWindowProxy alloc] _initWithPageContext:[self executionContext] args:args] autorelease];
     }
     else
     {
