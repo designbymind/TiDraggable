@@ -1,53 +1,99 @@
-var Draggable = require('ti.draggable');
+/*global require,console,Ti*/
+/*jslint devel: true, forin: true */
+/**
+ * An enhanced fork of the original TiDraggable module by Pedro Enrique,
+ * allows for simple creation of "draggable" views.
+ *
+ * Copyright (C) 2013 Seth Benjamin
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * -- Original License --
+ *
+ * Copyright 2012 Pedro Enrique
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
-var mainWindow = Ti.UI.createWindow({
-	backgroundColor : 'white',
-	exitOnClose : true,
-	fullscreen : true
-});
+(function () {
+  'use strict';
 
-var scrollView = Ti.UI.createScrollView({
-	contentWidth : Ti.UI.FILL,
-	contentHeight : Ti.UI.SIZE
-});
+  var Draggable = require('ti.draggable'),
+    mainWindow = Ti.UI.createWindow({
+      backgroundColor: 'white',
+      exitOnClose: true,
+      fullscreen: true,
+    }),
+    subscribe = function (proxy, observer) {
+      var key, events, eIndex;
 
-// create a grid of views
-for (var c = 1; c <= 5; c++) {
-	for (var r = 0; r < 20; r++) {
-		var view = Draggable.createView({
-			left : ((c - 1) * 20) + '%',
-			top : (r * 100),
-			width : '20%',
-			height : 100,
-			draggableConfig : {
-				enabled : false, // disabled by default
-				enableOnLongpress : true, // enable the dragging on a longpress touch event
-				showShadowOnMove : true // show a drop shadow while dragging the view
-			},
-			backgroundColor : '#' + Math.floor(Math.random() * 16777215).toString(16)
-		});
+      for (key in observer) {
+        if (typeof observer[key] === 'function') {
+          events = key.split(' ');
 
-		scrollView.add(view);
-		
-		// events
-		view.addEventListener("start", function() {
-			// lock the scrollView
-			scrollView.scrollingEnabled = false;
+          for (eIndex in events) {
+            proxy.addEventListener(events[eIndex], observer[key]);
+          }
+        }
+      }
+    },
+    createDraggableSquare = function (name, color, axis) {
+      var view = Draggable.createView({
+        width: 300,
+        height: 300,
+        borderRadius: 3,
+        backgroundColor: color || 'black',
+        draggableConfig: {
+          axis: axis,
+          minLeft: 0,
+          maxLeft: Ti.Platform.displayCaps.platformWidth - 100,
+          minTop: 0,
+          maxTop: Ti.Platform.displayCaps.platformHeight - 100,
+        },
+      });
 
-		});
-		view.addEventListener("end", function() {
-			// unlock the scrollView
-			scrollView.scrollingEnabled = true;
-		});
+      var slider = Ti.UI.createSlider({});
+      view.add(slider);
 
-		view.addEventListener("move", eventCallback);
-		view.addEventListener("cancel", eventCallback);
-	}
-}
+      view.add(
+        Ti.UI.createLabel({
+          text: name,
+        }),
+      );
 
-function eventCallback(e) {
-	Ti.API.info(e);
-}
+      subscribe(view, {
+        'start move end cancel': function (e) {
+          console.log('Event: ' + e.type, 'Left: ' + e.left, 'Top: ' + e.top);
+        },
+      });
 
-mainWindow.add(scrollView);
-mainWindow.open();
+      return view;
+    };
+
+  // mainWindow.add(createDraggableSquare('Horizontal', 'red', 'x'));
+  mainWindow.add(createDraggableSquare('Vertical', 'blue', 'y'));
+  // mainWindow.add(createDraggableSquare('Free', 'green'));
+
+  mainWindow.open();
+})();

@@ -53,6 +53,7 @@ import android.view.View;
 public class ConfigProxy extends KrollProxy implements KrollProxyListener
 {
 	protected WeakReference<DraggableImpl> draggableImpl;
+	public int threshold = 0;
 
 	public ConfigProxy(KrollDict config)
 	{
@@ -64,9 +65,10 @@ public class ConfigProxy extends KrollProxy implements KrollProxyListener
 		properties.put("axis", config != null && config.containsKeyAndNotNull("axis") ? TiConvert.toString(config, "axis") : null);
 		properties.put("maps", config != null && config.containsKeyAndNotNull("maps") ? (Object[]) config.get("maps") : null);
 		properties.put("minLeft", config != null && config.containsKeyAndNotNull("minLeft") ? TiConvert.toTiDimension(config, "minLeft", TiDimension.TYPE_LEFT) : null);
-		properties.put("maxLeft", config != null && config.containsKeyAndNotNull("minLeft") ? TiConvert.toTiDimension(config, "maxLeft", TiDimension.TYPE_LEFT) : null);
+		properties.put("maxLeft", config != null && config.containsKeyAndNotNull("maxLeft") ? TiConvert.toTiDimension(config, "maxLeft", TiDimension.TYPE_LEFT) : null);
 		properties.put("minTop", config != null && config.containsKeyAndNotNull("minTop") ? TiConvert.toTiDimension(config, "minTop", TiDimension.TYPE_TOP) : null);
 		properties.put("maxTop", config != null && config.containsKeyAndNotNull("maxTop") ? TiConvert.toTiDimension(config, "maxTop", TiDimension.TYPE_TOP) : null);
+		properties.put("threshold", config != null && config.containsKeyAndNotNull("threshold") ? TiConvert.toInt(config, "threshold") : null);
 
 		setModelListener(this);
 	}
@@ -74,7 +76,7 @@ public class ConfigProxy extends KrollProxy implements KrollProxyListener
 	public Integer getDimensionAsPixels(String key)
 	{
 		KrollDict props = this.getProperties();
-		
+
 		if (props.containsKeyAndNotNull(key) && props.get(key) instanceof TiDimension)
 		{
 			TiDimension dimension = (TiDimension) props.get(key);
@@ -107,6 +109,13 @@ public class ConfigProxy extends KrollProxy implements KrollProxyListener
 		{
 			applyProperties(args[0]);
 		}
+	}
+
+	@Kroll.method
+	@Kroll.getProperty
+	public int getDefaultThreshold()
+	{
+		return this.threshold;
 	}
 
 	@Override
@@ -154,7 +163,7 @@ public class ConfigProxy extends KrollProxy implements KrollProxyListener
 			properties.put(key, TiConvert.toTiDimension(TiConvert.toString(newValue), TiDimension.TYPE_TOP));
 		}
 	}
-	
+
 	public View getDecorView()
 	{
 		return TiApplication.getAppCurrentActivity().getWindow().getDecorView();

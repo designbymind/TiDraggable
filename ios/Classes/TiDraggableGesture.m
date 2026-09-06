@@ -39,22 +39,17 @@
 #import "TiViewProxy+ViewProxyExtended.h"
 #import "TiDraggableGesture.h"
 
+static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
+
 @implementation TiDraggableGesture
 
-- (id)initWithProxy:(TiViewProxy*)proxy andOptions:(NSDictionary *)options withDelegate:(id <TiDraggableGestureDelegate>)delegate
+- (id)initWithProxy:(TiViewProxy*)proxy andOptions:(NSDictionary *)options
 {
     if (self = [super init])
     {
         self.proxy = proxy;
-        
-        // set GestureRecognizers
         self.gesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panDetected:)];
-        isLognPressed = NO;
-        
-        // add delegates
-        [self.gesture setDelegate:self];
-        self.delegate = delegate;
-        
+
         [self.proxy setValue:self forKey:@"draggable"];
         [self.proxy setProxyObserver:self];
 
@@ -121,31 +116,44 @@
     }
 }
 
-
-- (void)addShadowToDraggedView:(TiViewProxy *)proxy
+// CREDIT: https://github.com/mikefogg/TiDraggable/commit/bebd0ddd2836faa08e86f08619b7503977ecc5b0
+- (void)removeGesture:(id)args
 {
-    proxy.view.layer.masksToBounds = NO;
-    proxy.view.layer.shadowOffset = CGSizeMake(0, 0);
-    proxy.view.layer.shadowRadius = 8;
-    proxy.view.layer.shadowOpacity = 0.8;
+    BOOL gestureIsAttached = [self.proxy.view.gestureRecognizers containsObject:self.gesture];
+    
+    if (gestureIsAttached && [self.proxy viewReady])
+    {
+        [self.proxy.view removeGestureRecognizer:self.gesture];
+        
+        TiViewProxy* panningProxy = (TiViewProxy*)[self.proxy.view proxy];
+        
+        [panningProxy fireEvent:@"remove_gesture"];
+    }
 }
 
-- (void)removeShadowToDraggedView:(TiViewProxy *)proxy
+- (void)addGesture:(id)args
 {
-    proxy.view.layer.shadowOpacity = 0;
+    BOOL gestureIsAttached = [self.proxy.view.gestureRecognizers containsObject:self.gesture];
+    
+    if (! gestureIsAttached && [self.proxy viewReady])
+    {
+        [self.proxy.view addGestureRecognizer:self.gesture];
+        
+        TiViewProxy* panningProxy = (TiViewProxy*)[self.proxy.view proxy];
+        
+        [panningProxy fireEvent:@"add_gesture"];
+    }
 }
 
 - (void)panDetected:(UIPanGestureRecognizer *)panRecognizer
 {
     ENSURE_UI_THREAD_1_ARG(panRecognizer);
-    
-    // check if isLognPressed and enabled is disabled
-    // if just one of those are enabled - then continue to pan the view
-    if ( !isLognPressed && [TiUtils boolValue:[self valueForKey:@"enabled"] def:YES] != YES)
+
+    if ([TiUtils boolValue:[self valueForKey:@"enabled"] def:YES] == NO)
     {
         return;
     }
-    
+
     NSString* axis = [self valueForKey:@"axis"];
     NSInteger maxLeft = [[self valueForKey:@"maxLeft"] floatValue];
     NSInteger minLeft = [[self valueForKey:@"minLeft"] floatValue];
@@ -164,43 +172,54 @@
         [self.proxy.view setFrame:[[self.proxy.view.layer presentationLayer] frame]];
         [self.proxy.view.layer removeAllAnimations];
     }
-    
+
     CGPoint translation = [panRecognizer translationInView:self.proxy.view];
     CGPoint newCenter = self.proxy.view.center;
     CGSize size = self.proxy.view.frame.size;
 
-    float tmpTranslationX, tmpTranslationY;
-    
+    float tmpTranslationX = 0.0f;
+    float tmpTranslationY = 0.0f;
+
     if ([panRecognizer state] == UIGestureRecognizerStateBegan)
     {
         touchStart = self.proxy.view.frame.origin;
+        objc_setAssociatedObject(self, kTiDraggableLockedAxisKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     else if ([panRecognizer state] == UIGestureRecognizerStateEnded)
     {
         touchEnd = self.proxy.view.frame.origin;
     }
 
-    if([[self valueForKey:@"axis"] isEqualToString:@"x"])
+    if ([axis isEqualToString:@"x"])
     {
         tmpTranslationX = translation.x;
-
         newCenter.x += translation.x;
-        newCenter.y = newCenter.y;
     }
-    else if([[self valueForKey:@"axis"] isEqualToString:@"y"])
+    else if ([axis isEqualToString:@"y"])
     {
         tmpTranslationY = translation.y;
-
-        newCenter.x = newCenter.x;
         newCenter.y += translation.y;
     }
-    else if([[self valueForKey:@"axis"] isEqualToString:@"free"])
+    else if ([axis isEqualToString:@"xy"])
     {
-        tmpTranslationX = translation.x;
-        tmpTranslationY = translation.y;
-        
-        newCenter.x += translation.x;
-        newCenter.y += translation.y;
+        NSString *lockedAxis = objc_getAssociatedObject(self, kTiDraggableLockedAxisKey);
+
+        if (lockedAxis == nil && (fabsf(translation.x) > 0.0f || fabsf(translation.y) > 0.0f))
+        {
+            lockedAxis = fabsf(translation.x) >= fabsf(translation.y) ? @"x" : @"y";
+            objc_setAssociatedObject(self, kTiDraggableLockedAxisKey, lockedAxis, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+
+        if ([lockedAxis isEqualToString:@"y"])
+        {
+            tmpTranslationY = translation.y;
+            newCenter.y += translation.y;
+        }
+        else
+        {
+            tmpTranslationX = translation.x;
+            newCenter.x += translation.x;
+        }
     }
     else
     {
@@ -211,22 +230,22 @@
         newCenter.y += translation.y;
     }
 
-    if(hasMaxLeft || hasMaxTop || hasMinLeft || hasMinTop)
+    if (hasMaxLeft || hasMaxTop || hasMinLeft || hasMinTop)
     {
-        if(hasMaxLeft && newCenter.x - size.width / 2 > maxLeft)
+        if (hasMaxLeft && newCenter.x - size.width / 2 > maxLeft)
         {
             newCenter.x = maxLeft + size.width / 2;
         }
-        else if(hasMinLeft && newCenter.x - size.width / 2 < minLeft)
+        else if (hasMinLeft && newCenter.x - size.width / 2 < minLeft)
         {
             newCenter.x = minLeft + size.width / 2;
         }
 
-        if(hasMaxTop && newCenter.y - size.height / 2 > maxTop)
+        if (hasMaxTop && newCenter.y - size.height / 2 > maxTop)
         {
             newCenter.y = maxTop + size.height / 2;
         }
-        else if(hasMinTop && newCenter.y - size.height / 2 < minTop)
+        else if (hasMinTop && newCenter.y - size.height / 2 < minTop)
         {
             newCenter.y = minTop + size.height / 2;
         }
@@ -234,23 +253,26 @@
 
     LayoutConstraint* layoutProperties = [self.proxy layoutProperties];
 
-    if ([self valueForKey:@"axis"] == nil || [[self valueForKey:@"axis"] isEqualToString:@"free"] || [[self valueForKey:@"axis"] isEqualToString:@"y"])
-    {
-        layoutProperties->top = TiDimensionDip(newCenter.y - size.height / 2);
-        
-        if (ensureBottom)
-        {
-            layoutProperties->bottom = TiDimensionDip(layoutProperties->top.value * -1);
-        }
-    }
-    
-    if ([self valueForKey:@"axis"] == nil || [[self valueForKey:@"axis"] isEqualToString:@"free"] || [[self valueForKey:@"axis"] isEqualToString:@"x"])
+    BOOL updateXLayout = (axis == nil || [axis isEqualToString:@"x"] || [axis isEqualToString:@"xy"]);
+    BOOL updateYLayout = (axis == nil || [axis isEqualToString:@"y"] || [axis isEqualToString:@"xy"]);
+
+    if (updateXLayout)
     {
         layoutProperties->left = TiDimensionDip(newCenter.x - size.width / 2);
 
         if (ensureRight)
         {
             layoutProperties->right = TiDimensionDip(layoutProperties->left.value * -1);
+        }
+    }
+
+    if (updateYLayout)
+    {
+        layoutProperties->top = TiDimensionDip(newCenter.y - size.height / 2);
+
+        if (ensureBottom)
+        {
+            layoutProperties->bottom = TiDimensionDip(layoutProperties->top.value * -1);
         }
     }
 
@@ -261,8 +283,14 @@
     [self mapProxyOriginToCollection:[self valueForKey:@"maps"]
                     withTranslationX:tmpTranslationX
                      andTranslationY:tmpTranslationY];
-    
-    // get the view and find its coords
+
+    if ([panRecognizer state] == UIGestureRecognizerStateEnded ||
+        [panRecognizer state] == UIGestureRecognizerStateCancelled ||
+        [panRecognizer state] == UIGestureRecognizerStateFailed)
+    {
+        objc_setAssociatedObject(self, kTiDraggableLockedAxisKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
     TiViewProxy* panningProxy = (TiViewProxy*)[self.proxy.view proxy];
 
     float left = [panningProxy view].frame.origin.x;
@@ -274,15 +302,14 @@
                                     [TiUtils pointToDictionary:self.proxy.view.center], @"center",
                                     [TiUtils pointToDictionary:[panRecognizer velocityInView:self.proxy.view]], @"velocity",
                                     nil];
-    
-    // Lets communicate back to Titanium world with events
-    if([panRecognizer state] == UIGestureRecognizerStateBegan)
+
+    if([panningProxy _hasListeners:@"start"] && [panRecognizer state] == UIGestureRecognizerStateBegan)
     {
-        [self checkAndFireEvent:panningProxy withName:@"start" withObject:tiProps];
+        [panningProxy fireEvent:@"start" withObject:tiProps];
     }
-    else if([panRecognizer state] == UIGestureRecognizerStateChanged)
+    else if([panningProxy _hasListeners:@"move"] && [panRecognizer state] == UIGestureRecognizerStateChanged)
     {
-        [self checkAndFireEvent:panningProxy withName:@"move" withObject:tiProps];
+        [panningProxy fireEvent:@"move" withObject:tiProps];
     }
     else if([panRecognizer state] == UIGestureRecognizerStateEnded || [panRecognizer state] == UIGestureRecognizerStateCancelled)
     {
@@ -291,20 +318,9 @@
                            [NSNumber numberWithFloat:touchEnd.y - touchStart.y], @"y",
                            nil] forKey:@"distance"];
 
-        [self checkAndFireEvent:panningProxy withName:([panRecognizer state] == UIGestureRecognizerStateCancelled ? @"cancel" : @"end") withObject:tiProps];
+        [panningProxy fireEvent:([panRecognizer state] == UIGestureRecognizerStateCancelled ? @"cancel" : @"end")
+                     withObject:tiProps];
     }
-}
- 
-// helper to fire instance events and global events
-- (void)checkAndFireEvent:(TiViewProxy*)proxy withName:(NSString*)eventName withObject:(id)eventData
-{
-    if([proxy _hasListeners:eventName])
-    {
-        [proxy fireEvent:eventName withObject:eventData];
-    }
-    
-    // fire global
-    [self.delegate fireGlobalEvent:eventName withObject:eventData withSource:proxy];
 }
 
 - (void)correctMappedProxyPositions
@@ -649,9 +665,13 @@
 }
 
 
-# pragma UIGestureRecognizerDelegate
+#pragma mark - UIGestureRecognizerDelegate
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch
+{
+    if ([touch.view isDescendantOfView:self.proxy.view]) {
+        return NO;
+    }
 
--(BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     return YES;
 }
 
