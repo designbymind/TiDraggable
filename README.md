@@ -97,6 +97,43 @@ This means the view can move horizontally or vertically, but not diagonally duri
 
 If `axis` is omitted, the view can move freely on both axes.
 
+## Native Horizontal Release (iOS)
+
+Set `nativeReleaseAnimation` to `true` to let the native pan recognizer decide and begin the horizontal release animation immediately. This avoids waiting for an `end` event to cross the JavaScript bridge before starting the swipe or snapback animation.
+
+```javascript
+var card = Draggable.createView({
+  draggableConfig: {
+    axis: 'xy',
+    nativeReleaseAnimation: true,
+    swipeThreshold: 80,
+    swipeVelocityThreshold: 650,
+    swipeOutDistance: Ti.Platform.displayCaps.platformWidth + 100,
+    swipeOutDuration: 0.25,
+    snapBack: true,
+    snapBackDuration: 0.42,
+    snapBackDamping: 0.84
+  }
+});
+```
+
+The native release path applies only to horizontal releases. With `axis: 'xy'`, vertical releases continue through the existing `end` event so the application can handle its own vertical behavior.
+
+- `nativeReleaseAnimation` (`Boolean`, default `false`) — Enables the native horizontal release path.
+- `swipeThreshold` (`Number`, default `80`) — Horizontal distance in points required to dismiss. Set to `0` to disable the distance threshold.
+- `swipeVelocityThreshold` (`Number`, default `650`) — Horizontal release velocity in points per second required to dismiss. Set to `0` to disable the velocity threshold.
+- `swipeOutDistance` (`Number`) — Horizontal distance from the gesture's starting center to the offscreen target. The default is the parent width plus the draggable view width.
+- `swipeOutDuration` (`Number`, default `0.25`) — Swipe completion duration in seconds.
+- `snapBack` (`Boolean`, default `true`) — Returns a horizontal release that misses both thresholds to its starting position.
+- `snapBackDuration` (`Number`, default `0.42`) — Snapback duration in seconds.
+- `snapBackDamping` (`Number`, default `0.84`) — Snapback spring damping ratio from `0.01` through `1.0`.
+
+The existing `end` event still fires. Its payload includes `nativeReleaseHandled` and, when handled, `releaseAction` (`swipe` or `snapback`). The module also emits:
+
+- `release` — Fires immediately after the native release animation starts.
+- `swipe` — Fires when a native offscreen swipe finishes and includes `direction` (`left` or `right`).
+- `snapback` — Fires when the native return animation finishes.
+
 ### `Number` - minLeft
 The left-most boundary of the view being dragged. Can be set to `null` to disable property.
 

@@ -42,8 +42,8 @@
 @interface TiDraggableGesture : TiProxy<TiProxyObserver, UIGestureRecognizerDelegate, TiAnimationDelegate>
 {
     CGPoint touchStart;
+    CGPoint touchStartCenter;
     CGPoint touchEnd;
-    CGPoint lastAnimationPosition;
 }
 
 - (id)initWithProxy:(TiViewProxy*)proxy andOptions:(NSDictionary*)options;

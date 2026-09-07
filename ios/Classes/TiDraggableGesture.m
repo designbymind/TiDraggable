@@ -41,6 +41,15 @@
 
 static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
 
+@interface TiDraggableGesture ()
+
+- (BOOL)startNativeHorizontalReleaseForRecognizer:(UIPanGestureRecognizer *)panRecognizer
+                                        lockedAxis:(NSString *)lockedAxis
+                                         properties:(NSMutableDictionary *)properties;
+- (void)persistCurrentViewPositionUpdatingX:(BOOL)updateX updatingY:(BOOL)updateY;
+
+@end
+
 @implementation TiDraggableGesture
 
 - (id)initWithProxy:(TiViewProxy*)proxy andOptions:(NSDictionary *)options
@@ -183,11 +192,8 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     if ([panRecognizer state] == UIGestureRecognizerStateBegan)
     {
         touchStart = self.proxy.view.frame.origin;
+        touchStartCenter = self.proxy.view.center;
         objc_setAssociatedObject(self, kTiDraggableLockedAxisKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    else if ([panRecognizer state] == UIGestureRecognizerStateEnded)
-    {
-        touchEnd = self.proxy.view.frame.origin;
     }
 
     if ([axis isEqualToString:@"x"])
@@ -284,6 +290,17 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
                     withTranslationX:tmpTranslationX
                      andTranslationY:tmpTranslationY];
 
+    UIGestureRecognizerState gestureState = [panRecognizer state];
+    NSString *lockedAxis = objc_getAssociatedObject(self, kTiDraggableLockedAxisKey);
+
+    if (gestureState == UIGestureRecognizerStateEnded ||
+        gestureState == UIGestureRecognizerStateCancelled ||
+        gestureState == UIGestureRecognizerStateFailed)
+    {
+        // Capture the position after the recognizer's final translation has been applied.
+        touchEnd = self.proxy.view.frame.origin;
+    }
+
     if ([panRecognizer state] == UIGestureRecognizerStateEnded ||
         [panRecognizer state] == UIGestureRecognizerStateCancelled ||
         [panRecognizer state] == UIGestureRecognizerStateFailed)
@@ -303,6 +320,30 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
                                     [TiUtils pointToDictionary:[panRecognizer velocityInView:self.proxy.view]], @"velocity",
                                     nil];
 
+    if (gestureState == UIGestureRecognizerStateEnded || gestureState == UIGestureRecognizerStateCancelled)
+    {
+        [tiProps setObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                           [NSNumber numberWithFloat:touchEnd.x - touchStart.x], @"x",
+                           [NSNumber numberWithFloat:touchEnd.y - touchStart.y], @"y",
+                           nil]
+                    forKey:@"distance"];
+    }
+
+    BOOL nativeReleaseHandled = NO;
+
+    if (gestureState == UIGestureRecognizerStateEnded &&
+        [TiUtils boolValue:[self valueForKey:@"nativeReleaseAnimation"] def:NO])
+    {
+        nativeReleaseHandled = [self startNativeHorizontalReleaseForRecognizer:panRecognizer
+                                                                     lockedAxis:lockedAxis
+                                                                      properties:tiProps];
+    }
+
+    if (gestureState == UIGestureRecognizerStateEnded || gestureState == UIGestureRecognizerStateCancelled)
+    {
+        [tiProps setObject:[NSNumber numberWithBool:nativeReleaseHandled] forKey:@"nativeReleaseHandled"];
+    }
+
     if([panningProxy _hasListeners:@"start"] && [panRecognizer state] == UIGestureRecognizerStateBegan)
     {
         [panningProxy fireEvent:@"start" withObject:tiProps];
@@ -313,14 +354,154 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     }
     else if([panRecognizer state] == UIGestureRecognizerStateEnded || [panRecognizer state] == UIGestureRecognizerStateCancelled)
     {
-        [tiProps setValue:[NSDictionary dictionaryWithObjectsAndKeys:
-                           [NSNumber numberWithFloat:touchEnd.x - touchStart.x], @"x",
-                           [NSNumber numberWithFloat:touchEnd.y - touchStart.y], @"y",
-                           nil] forKey:@"distance"];
-
         [panningProxy fireEvent:([panRecognizer state] == UIGestureRecognizerStateCancelled ? @"cancel" : @"end")
                      withObject:tiProps];
+
+        if (nativeReleaseHandled && [panningProxy _hasListeners:@"release"])
+        {
+            [panningProxy fireEvent:@"release" withObject:tiProps];
+        }
     }
+}
+
+- (BOOL)startNativeHorizontalReleaseForRecognizer:(UIPanGestureRecognizer *)panRecognizer
+                                        lockedAxis:(NSString *)lockedAxis
+                                         properties:(NSMutableDictionary *)properties
+{
+    NSString *axis = [self valueForKey:@"axis"];
+    CGPoint distance = CGPointMake(touchEnd.x - touchStart.x, touchEnd.y - touchStart.y);
+    UIView *view = self.proxy.view;
+    UIView *parentView = view.superview;
+    CGPoint velocity = [panRecognizer velocityInView:parentView ?: view];
+
+    BOOL isHorizontalRelease = [axis isEqualToString:@"x"] ||
+        ([axis isEqualToString:@"xy"] && [lockedAxis isEqualToString:@"x"]);
+
+    if (axis == nil)
+    {
+        isHorizontalRelease = fabs(velocity.x) >= fabs(velocity.y);
+
+        if (fabs(velocity.x) < 1.0f && fabs(velocity.y) < 1.0f)
+        {
+            isHorizontalRelease = fabs(distance.x) >= fabs(distance.y);
+        }
+    }
+
+    if (!isHorizontalRelease)
+    {
+        return NO;
+    }
+
+    CGFloat swipeThreshold = MAX(0.0f, [TiUtils floatValue:[self valueForKey:@"swipeThreshold"] def:80.0f]);
+    CGFloat swipeVelocityThreshold = MAX(0.0f, [TiUtils floatValue:[self valueForKey:@"swipeVelocityThreshold"] def:650.0f]);
+    BOOL passedDistanceThreshold = swipeThreshold > 0.0f && fabs(distance.x) >= swipeThreshold;
+    BOOL passedVelocityThreshold = swipeVelocityThreshold > 0.0f && fabs(velocity.x) >= swipeVelocityThreshold;
+    BOOL shouldSwipe = passedDistanceThreshold || passedVelocityThreshold;
+
+    NSString *direction = nil;
+
+    if (shouldSwipe)
+    {
+        CGFloat directionValue = passedVelocityThreshold ? velocity.x : distance.x;
+        direction = directionValue < 0.0f ? @"left" : @"right";
+    }
+
+    BOOL shouldSnapBack = !shouldSwipe && [TiUtils boolValue:[self valueForKey:@"snapBack"] def:YES];
+
+    if (!shouldSwipe && !shouldSnapBack)
+    {
+        [properties setObject:@"none" forKey:@"releaseAction"];
+        return NO;
+    }
+
+    NSString *releaseAction = shouldSwipe ? @"swipe" : @"snapback";
+    [properties setObject:releaseAction forKey:@"releaseAction"];
+    [properties setObject:[NSNumber numberWithBool:YES] forKey:@"nativeReleaseHandled"];
+
+    if (direction != nil)
+    {
+        [properties setObject:direction forKey:@"direction"];
+    }
+
+    [properties setObject:[TiUtils pointToDictionary:velocity] forKey:@"velocity"];
+
+    CGPoint currentCenter = view.center;
+    CGPoint targetCenter = currentCenter;
+    NSTimeInterval duration;
+    CGFloat damping;
+
+    if (shouldSwipe)
+    {
+        CGFloat defaultSwipeOutDistance = (parentView != nil ? parentView.bounds.size.width : view.bounds.size.width) + view.bounds.size.width;
+        CGFloat swipeOutDistance = fabs([TiUtils floatValue:[self valueForKey:@"swipeOutDistance"] def:defaultSwipeOutDistance]);
+        CGFloat directionMultiplier = [direction isEqualToString:@"left"] ? -1.0f : 1.0f;
+
+        targetCenter.x = touchStartCenter.x + directionMultiplier * swipeOutDistance;
+        duration = MAX(0.05, [TiUtils doubleValue:[self valueForKey:@"swipeOutDuration"] def:0.25]);
+        damping = 1.0f;
+    }
+    else
+    {
+        targetCenter.x = touchStartCenter.x;
+        duration = MAX(0.05, [TiUtils doubleValue:[self valueForKey:@"snapBackDuration"] def:0.42]);
+        damping = MIN(1.0f, MAX(0.01f, [TiUtils floatValue:[self valueForKey:@"snapBackDamping"] def:0.84f]));
+    }
+
+    CGFloat remainingDistance = targetCenter.x - currentCenter.x;
+    CGFloat initialSpringVelocity = fabs(remainingDistance) > 0.5f ? velocity.x / remainingDistance : 0.0f;
+    initialSpringVelocity = MIN(20.0f, MAX(-20.0f, initialSpringVelocity));
+
+    TiViewProxy *panningProxy = self.proxy;
+    NSMutableDictionary *completionProperties = [[properties mutableCopy] autorelease];
+
+    [UIView animateWithDuration:duration
+                          delay:0.0
+         usingSpringWithDamping:damping
+          initialSpringVelocity:initialSpringVelocity
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+                         view.center = targetCenter;
+                     }
+                     completion:^(BOOL finished) {
+                         if (!finished)
+                         {
+                             return;
+                         }
+
+                         [self persistCurrentViewPositionUpdatingX:YES updatingY:NO];
+
+                         CGRect finalFrame = view.frame;
+                         [completionProperties setObject:[NSNumber numberWithFloat:finalFrame.origin.x] forKey:@"left"];
+                         [completionProperties setObject:[NSNumber numberWithFloat:finalFrame.origin.y] forKey:@"top"];
+                         [completionProperties setObject:[TiUtils pointToDictionary:view.center] forKey:@"center"];
+
+                         NSString *completionEvent = shouldSwipe ? @"swipe" : @"snapback";
+
+                         if ([panningProxy _hasListeners:completionEvent])
+                         {
+                             [panningProxy fireEvent:completionEvent withObject:completionProperties];
+                         }
+                     }];
+
+    return YES;
+}
+
+- (void)persistCurrentViewPositionUpdatingX:(BOOL)updateX updatingY:(BOOL)updateY
+{
+    LayoutConstraint *layoutProperties = [self.proxy layoutProperties];
+    CGRect frame = self.proxy.view.frame;
+
+    if (updateX)
+    {
+        layoutProperties->left = TiDimensionDip(frame.origin.x);
+    }
+
+    if (updateY)
+    {
+        layoutProperties->top = TiDimensionDip(frame.origin.y);
+    }
+
+    [self.proxy refreshView:nil];
 }
 
 - (void)correctMappedProxyPositions
