@@ -40,12 +40,8 @@ var Draggable = require('ti.draggable');
 var screenHeight = Ti.Platform.displayCaps.platformHeight;
 var expandedTop = Ti.UI.statusBarHeight + 5 + 36 + 16;
 var middleTop = Math.round(screenHeight * 0.43);
-// var collapsedTop = Math.round(screenHeight * 0.73);
 var collapsedTop = Ti.Platform.displayCaps.platformHeight - 106; // 72 + 34 (bottom safe area)
-var mainWindow = Ti.UI.createWindow({
-	backgroundColor: '#dbe8d4'
-	// fullscreen: true
-});
+var mainWindow = Ti.UI.createWindow({ backgroundColor: '#F3F2F8' });
 var rows = [];
 var index;
 
@@ -59,10 +55,10 @@ for (index = 1; index <= 40; index += 1) {
 
 mainWindow.add(
 	Ti.UI.createLabel({
-		text: 'Map content',
-		top: 145,
-		color: '#647162',
-		font: { fontSize: 28, fontWeight: 'bold' }
+		text: 'MAP',
+		top: 200,
+		color: '#999999',
+		font: { fontSize: 44, fontWeight: 'bold' }
 	})
 );
 
@@ -70,37 +66,45 @@ var mapButtons = Ti.UI.createView({
 	right: 16,
 	top: collapsedTop - 116,
 	width: 48,
-	height: 104,
-	layout: 'vertical'
+	height: 108,
+	layout: 'vertical',
+	clipMode: Ti.UI.iOS.CLIP_MODE_DISABLED
 });
 
 mapButtons.add(
 	Ti.UI.createButton({
-		title: '+',
 		width: 48,
 		height: 48,
-		borderRadius: 24,
-		backgroundColor: 'white',
-		color: '#18201b'
+		top: 0,
+		clipMode: Ti.UI.iOS.CLIP_MODE_DISABLED,
+		configuration: Ti.UI.iOS.createButtonConfiguration({
+			style: 'prominentClearGlass',
+			color: '#FFFFFF',
+			backgroundColor: Ti.UI.userInterfaceStyle === 1 ? '#007AFF' : '#0A84FF',
+			image: Ti.UI.iOS.systemImage('plus', { weight: 'bold', size: 18 })
+		})
 	})
 );
 mapButtons.add(
 	Ti.UI.createButton({
-		title: '◎',
-		top: 8,
 		width: 48,
 		height: 48,
-		borderRadius: 24,
-		backgroundColor: 'white',
-		color: '#18201b'
+		top: 12,
+		clipMode: Ti.UI.iOS.CLIP_MODE_DISABLED,
+		configuration: Ti.UI.iOS.createButtonConfiguration({
+			style: 'prominentClearGlass',
+			color: '#FFFFFF',
+			backgroundColor: Ti.UI.userInterfaceStyle === 1 ? '#007AFF' : '#0A84FF',
+			image: Ti.UI.iOS.systemImage('minus', { weight: 'bold', size: 18 })
+		})
 	})
 );
 
 var tableView = Ti.UI.createTableView({
 	top: 72,
 	left: 0,
-	right: 0,
-	bottom: 0,
+	width: Ti.UI.FILL,
+	height: Ti.UI.FILL,
 	backgroundColor: 'transparent',
 	separatorColor: '#e7e7e7',
 	data: rows
@@ -113,6 +117,9 @@ var sheet = Draggable.createView({
 	height: screenHeight - expandedTop,
 	borderRadius: 24,
 	backgroundColor: '#ffffff',
+	viewShadowColor: 'rgba(0, 0, 0, 0.32)',
+	viewShadowOffset: { x: 0, y: -1 },
+	viewShadowRadius: 5,
 	draggableConfig: {
 		axis: 'y',
 		detents: {
@@ -121,7 +128,7 @@ var sheet = Draggable.createView({
 			collapsed: collapsedTop
 		},
 		initialDetent: 'collapsed',
-		detentVelocityThreshold: 500,
+		detentVelocityThreshold: 650,
 		scrollHandoff: {
 			view: tableView,
 			atTopBehavior: 'drag',
@@ -134,6 +141,7 @@ var sheet = Draggable.createView({
 				attachUntil: 'middle',
 				offset: -12,
 				fadeBetween: ['middle', 'expanded'],
+				bringToFront: false,
 				disableTouchesWhenHidden: true
 			}
 		]
@@ -145,21 +153,23 @@ sheet.add(
 		top: 10,
 		width: 42,
 		height: 5,
-		borderRadius: 3,
-		backgroundColor: '#c3c5c4'
+		borderRadius: 2.5,
+		backgroundColor: '#000000',
+		opacity: 0.15
 	})
 );
 sheet.add(
 	Ti.UI.createView({
 		top: 72,
 		width: Ti.UI.FILL,
-		height: 1,
-		backgroundColor: '#000000'
+		height: 0.33,
+		backgroundColor: '#3C3C43',
+		opacity: 0.29
 	})
 );
 sheet.add(
 	Ti.UI.createLabel({
-		text: 'Nearby homes',
+		text: 'Nearby People',
 		top: 28,
 		left: 20,
 		color: '#18201b',
@@ -168,35 +178,80 @@ sheet.add(
 );
 sheet.add(tableView);
 
-var policyLabel = Ti.UI.createLabel({
-	text: 'At top: drag',
-	top: 44,
-	left: 16,
-	color: '#18201b',
-	font: { fontSize: 14, fontWeight: 'semibold' }
-});
 var policyButtons = Ti.UI.createView({
 	top: Ti.UI.statusBarHeight + 5 + 8,
 	left: 12,
 	height: 36,
-	layout: 'horizontal'
+	layout: 'horizontal',
+	clipMode: Ti.UI.iOS.CLIP_MODE_DISABLED
 });
 
-['drag', 'scroll', 'dismiss'].forEach(function (behavior) {
-	var button = Ti.UI.createButton({
-		title: behavior,
-		width: 82,
-		height: 34,
-		right: 6,
-		borderRadius: 17,
-		backgroundColor: '#ffffff',
-		color: '#18201b',
-		font: { fontSize: 13 }
-	});
+['Drag', 'Scroll', 'Dismiss'].forEach(function (behavior) {
+	// Update the selected button configuration to indicate it is selected
+	if (behavior === 'Drag') {
+		var button = Ti.UI.createButton({
+			title: 'Drag',
+			width: 100,
+			height: 34,
+			right: 6,
+			clipMode: Ti.UI.iOS.CLIP_MODE_DISABLED,
+			configuration: Ti.UI.iOS.createButtonConfiguration({
+				title: 'Drag',
+				font: { fontSize: 13, fontWeight: 'bold' },
+				style: 'prominentClearGlass',
+				color: '#000000',
+				image: Ti.UI.iOS.systemImage('circlebadge.fill', { weight: 'regular', size: 14 }),
+				imagePadding: 6
+			})
+		});
+	} else {
+		var button = Ti.UI.createButton({
+			title: behavior,
+			width: 100,
+			height: 34,
+			right: 6,
+			clipMode: Ti.UI.iOS.CLIP_MODE_DISABLED,
+			configuration: Ti.UI.iOS.createButtonConfiguration({
+				style: 'prominentClearGlass',
+				title: behavior,
+				font: { fontSize: 13, fontWeight: 'medium' },
+				color: Ti.UI.userInterfaceStyle === 1 ? '#007AFF' : '#0A84FF',
+				image: Ti.UI.iOS.systemImage('circlebadge', { weight: 'regular', size: 14 }),
+				imagePadding: 6
+			})
+		});
+	}
 
 	button.addEventListener('click', function () {
-		sheet.draggable.setConfig('scrollHandoff.atTopBehavior', behavior);
-		policyLabel.text = 'At top: ' + behavior;
+		// Update the draggable sheet's behavior based on the selected button
+		sheet.draggable.setConfig('scrollHandoff.atTopBehavior', behavior.toLowerCase());
+
+		// The selected behavior button should have black text
+		policyButtons.children.forEach(function (btn) {
+			// Ti.API.info('Updating button configuration for behavior: ' + behavior);
+			// Ti.API.info('btn: ' + JSON.stringify(btn));
+
+			// Update the selected button configuration to indicate it is selected
+			if (btn === button) {
+				btn.configuration = Ti.UI.iOS.createButtonConfiguration({
+					title: btn.title,
+					font: { fontSize: 13, fontWeight: 'bold' },
+					style: 'prominentClearGlass',
+					color: '#000000',
+					image: Ti.UI.iOS.systemImage('circlebadge.fill', { weight: 'regular', size: 14 }),
+					imagePadding: 6
+				});
+			} else {
+				btn.configuration = Ti.UI.iOS.createButtonConfiguration({
+					title: btn.title,
+					font: { fontSize: 13, fontWeight: 'medium' },
+					style: 'prominentClearGlass',
+					color: Ti.UI.userInterfaceStyle === 1 ? '#007AFF' : '#0A84FF',
+					image: Ti.UI.iOS.systemImage('circlebadge', { weight: 'regular', size: 14 }),
+					imagePadding: 6
+				});
+			}
+		});
 	});
 	policyButtons.add(button);
 });
@@ -204,16 +259,18 @@ var policyButtons = Ti.UI.createView({
 sheet.addEventListener('handoff', function (event) {
 	Ti.API.info('Handoff owner: ' + event.owner);
 });
+sheet.addEventListener('detentwillchange', function (event) {
+	Ti.API.info('Will change to detent: ' + event.detent);
+});
 sheet.addEventListener('detentchange', function (event) {
 	Ti.API.info('Settled at detent: ' + event.detent);
 });
-sheet.addEventListener('dismiss', function () {
+sheet.addEventListener('Dismiss', function () {
 	Ti.API.info('Dismiss policy reached its target detent');
 });
 
 mainWindow.add(mapButtons);
 mainWindow.add(sheet);
-mainWindow.add(policyLabel);
 mainWindow.add(policyButtons);
 
 mainWindow.open();
