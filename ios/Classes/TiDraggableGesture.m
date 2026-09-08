@@ -40,6 +40,14 @@
 #import "TiDraggableGesture.h"
 
 static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
+static const void *kTiDraggableFollowerInteractionKey = &kTiDraggableFollowerInteractionKey;
+static void *kTiDraggableContentOffsetContext = &kTiDraggableContentOffsetContext;
+
+typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
+    TiDraggableVerticalPanOwnerNone = 0,
+    TiDraggableVerticalPanOwnerScrollView,
+    TiDraggableVerticalPanOwnerSheet
+};
 
 @interface TiDraggableGesture ()
 
@@ -47,6 +55,30 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
                                         lockedAxis:(NSString *)lockedAxis
                                          properties:(NSMutableDictionary *)properties;
 - (void)persistCurrentViewPositionUpdatingX:(BOOL)updateX updatingY:(BOOL)updateY;
+- (void)updateGestureCoordination;
+- (void)setObservedScrollView:(UIScrollView *)scrollView;
+- (UIScrollView *)configuredScrollView;
+- (UIScrollView *)firstScrollViewInView:(UIView *)view;
+- (BOOL)gestureBeganInsideScrollView:(UIScrollView *)scrollView recognizer:(UIPanGestureRecognizer *)panRecognizer;
+- (BOOL)shouldMoveSheetForVerticalTranslation:(CGFloat)translationY;
+- (void)setVerticalPanOwner:(TiDraggableVerticalPanOwner)owner;
+- (CGFloat)topContentOffsetForScrollView:(UIScrollView *)scrollView;
+- (void)pinConfiguredScrollViewToTop;
+- (NSArray *)sortedDetents;
+- (NSDictionary *)detentNamed:(NSString *)name;
+- (CGFloat)topHandoffPosition;
+- (BOOL)startNativeVerticalDetentReleaseForRecognizer:(UIPanGestureRecognizer *)panRecognizer
+                                           lockedAxis:(NSString *)lockedAxis
+                                            properties:(NSMutableDictionary *)properties;
+- (void)animateToDetent:(NSDictionary *)detent
+               velocity:(CGFloat)velocity
+               animated:(BOOL)animated
+          releaseAction:(NSString *)releaseAction
+             properties:(NSMutableDictionary *)properties;
+- (void)updateFollowersForSheetTop:(CGFloat)sheetTop persistLayout:(BOOL)persistLayout;
+- (void)cancelFollowerAnimations;
+- (CGFloat)topForDetentReference:(id)reference found:(BOOL *)found;
+- (void)setConfigValue:(id)value forKeyPath:(NSString *)keyPath;
 
 @end
 
@@ -57,12 +89,15 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     if (self = [super init])
     {
         self.proxy = proxy;
-        self.gesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panDetected:)];
+        UIPanGestureRecognizer *panGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panDetected:)];
+        self.gesture = panGesture;
+        [panGesture release];
 
         [self.proxy setValue:self forKey:@"draggable"];
         [self.proxy setProxyObserver:self];
 
         [self setValuesForKeysWithDictionary:options];
+        [self updateGestureCoordination];
         [self correctMappedProxyPositions];
     }
 
@@ -77,11 +112,33 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     {
         [self.proxy.view addGestureRecognizer:self.gesture];
     }
+
+    [self updateGestureCoordination];
+
+    if (!_didApplyInitialDetent && [self.proxy viewReady])
+    {
+        NSString *initialDetent = [TiUtils stringValue:[self valueForKey:@"initialDetent"]];
+        NSDictionary *detent = [self detentNamed:initialDetent];
+
+        if (detent != nil)
+        {
+            _didApplyInitialDetent = YES;
+            [self animateToDetent:detent velocity:0.0f animated:NO releaseAction:@"initial" properties:nil];
+        }
+    }
+
+    if ([self.proxy viewReady])
+    {
+        [self updateFollowersForSheetTop:self.proxy.view.frame.origin.y persistLayout:NO];
+    }
 }
 
 - (void)dealloc
 {
-    RELEASE_TO_NIL(self.gesture);
+    [self setObservedScrollView:nil];
+    self.gesture.delegate = nil;
+    self.gesture = nil;
+    _coordinatedScrollView = nil;
 
     [super dealloc];
 }
@@ -98,31 +155,132 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     }
     else if ([args isKindOfClass:[NSArray class]] && [args count] >= 2)
     {
-        NSString* key;
+        NSString* key = nil;
         id value = [args objectAtIndex:1];
 
         ENSURE_ARG_AT_INDEX(key, args, 0, NSString);
 
-        NSMutableDictionary* params = [[self valueForKey:@"config"] mutableCopy];
-
-        if (! params)
-        {
-            params = [[NSMutableDictionary alloc] init];
-        }
-
-        [params setValue:value forKeyPath:key];
-
-        [self setValuesForKeysWithDictionary:[[params copy] autorelease]];
-
-        [params release];
+        [self setConfigValue:value forKeyPath:key];
 
         didUpdateConfig = YES;
     }
 
     if (didUpdateConfig)
     {
+        [self updateGestureCoordination];
         [self correctMappedProxyPositions];
+
+        if ([self.proxy viewReady])
+        {
+            [self updateFollowersForSheetTop:self.proxy.view.frame.origin.y persistLayout:YES];
+        }
     }
+}
+
+- (void)setConfigValue:(id)value forKeyPath:(NSString *)keyPath
+{
+    if ([keyPath length] == 0)
+    {
+        return;
+    }
+
+    NSArray *components = [keyPath componentsSeparatedByString:@"."];
+    NSString *rootKey = [components objectAtIndex:0];
+
+    if ([rootKey length] == 0)
+    {
+        return;
+    }
+
+    if ([components count] == 1)
+    {
+        if (value == nil || value == [NSNull null])
+        {
+            [self deleteKey:rootKey];
+        }
+        else
+        {
+            [self replaceValue:value forKey:rootKey notification:NO];
+        }
+
+        return;
+    }
+
+    id configuredRoot = [self valueForKey:rootKey];
+    NSMutableDictionary *rootDictionary = [configuredRoot isKindOfClass:[NSDictionary class]]
+        ? [configuredRoot mutableCopy]
+        : [[NSMutableDictionary alloc] init];
+    NSMutableDictionary *currentDictionary = rootDictionary;
+
+    for (NSUInteger index = 1; index + 1 < [components count]; index++)
+    {
+        NSString *component = [components objectAtIndex:index];
+        id nestedValue = [currentDictionary objectForKey:component];
+        NSMutableDictionary *nestedDictionary = [nestedValue isKindOfClass:[NSDictionary class]]
+            ? [[nestedValue mutableCopy] autorelease]
+            : [NSMutableDictionary dictionary];
+
+        [currentDictionary setObject:nestedDictionary forKey:component];
+        currentDictionary = nestedDictionary;
+    }
+
+    NSString *finalKey = [components lastObject];
+
+    if ([finalKey length] == 0)
+    {
+        [rootDictionary release];
+        return;
+    }
+
+    if (value == nil || value == [NSNull null])
+    {
+        [currentDictionary removeObjectForKey:finalKey];
+    }
+    else
+    {
+        [currentDictionary setObject:value forKey:finalKey];
+    }
+
+    [self replaceValue:[[rootDictionary copy] autorelease] forKey:rootKey notification:NO];
+    [rootDictionary release];
+}
+
+- (void)setDetent:(id)args
+{
+    ENSURE_UI_THREAD_1_ARG(args);
+
+    NSString *name = nil;
+    NSDictionary *options = nil;
+
+    if ([args isKindOfClass:[NSArray class]])
+    {
+        if ([args count] > 0)
+        {
+            name = [TiUtils stringValue:[args objectAtIndex:0]];
+        }
+
+        if ([args count] > 1 && [[args objectAtIndex:1] isKindOfClass:[NSDictionary class]])
+        {
+            options = [args objectAtIndex:1];
+        }
+    }
+    else
+    {
+        name = [TiUtils stringValue:args];
+    }
+
+    NSDictionary *detent = [self detentNamed:name];
+
+    if (detent == nil)
+    {
+        [self throwException:@"Unknown detent"
+                   subreason:[NSString stringWithFormat:@"No detent named '%@' is configured.", name ?: @""]
+                    location:CODELOCATION];
+        return;
+    }
+
+    BOOL animated = [TiUtils boolValue:[options objectForKey:@"animated"] def:YES];
+    [self animateToDetent:detent velocity:0.0f animated:animated releaseAction:@"programmatic" properties:nil];
 }
 
 // CREDIT: https://github.com/mikefogg/TiDraggable/commit/bebd0ddd2836faa08e86f08619b7503977ecc5b0
@@ -164,10 +322,10 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     }
 
     NSString* axis = [self valueForKey:@"axis"];
-    NSInteger maxLeft = [[self valueForKey:@"maxLeft"] floatValue];
-    NSInteger minLeft = [[self valueForKey:@"minLeft"] floatValue];
-    NSInteger maxTop = [[self valueForKey:@"maxTop"] floatValue];
-    NSInteger minTop = [[self valueForKey:@"minTop"] floatValue];
+    CGFloat maxLeft = [[self valueForKey:@"maxLeft"] floatValue];
+    CGFloat minLeft = [[self valueForKey:@"minLeft"] floatValue];
+    CGFloat maxTop = [[self valueForKey:@"maxTop"] floatValue];
+    CGFloat minTop = [[self valueForKey:@"minTop"] floatValue];
     BOOL hasMaxLeft = [self valueForKey:@"maxLeft"] != nil;
     BOOL hasMinLeft = [self valueForKey:@"minLeft"] != nil;
     BOOL hasMaxTop = [self valueForKey:@"maxTop"] != nil;
@@ -175,11 +333,21 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     BOOL ensureRight = [TiUtils boolValue:[self valueForKey:@"ensureRight"] def:NO];
     BOOL ensureBottom = [TiUtils boolValue:[self valueForKey:@"ensureBottom"] def:NO];
     BOOL cancelAnimations = [TiUtils boolValue:[self valueForKey:@"cancelAnimations"] def:YES];
+    NSArray *detents = [self sortedDetents];
+
+    if ([detents count] > 0)
+    {
+        minTop = [[[detents objectAtIndex:0] objectForKey:@"top"] floatValue];
+        maxTop = [[[detents lastObject] objectForKey:@"top"] floatValue];
+        hasMinTop = YES;
+        hasMaxTop = YES;
+    }
 
     if (cancelAnimations && [[self.proxy.view.layer animationKeys] count] > 0)
     {
         [self.proxy.view setFrame:[[self.proxy.view.layer presentationLayer] frame]];
         [self.proxy.view.layer removeAllAnimations];
+        [self cancelFollowerAnimations];
     }
 
     CGPoint translation = [panRecognizer translationInView:self.proxy.view];
@@ -193,6 +361,9 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     {
         touchStart = self.proxy.view.frame.origin;
         touchStartCenter = self.proxy.view.center;
+        _coordinatedScrollView = [self configuredScrollView];
+        _gestureBeganInCoordinatedScrollView = [self gestureBeganInsideScrollView:_coordinatedScrollView recognizer:panRecognizer];
+        _verticalPanOwner = TiDraggableVerticalPanOwnerNone;
         objc_setAssociatedObject(self, kTiDraggableLockedAxisKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
@@ -203,23 +374,29 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     }
     else if ([axis isEqualToString:@"y"])
     {
-        tmpTranslationY = translation.y;
-        newCenter.y += translation.y;
+        if ([self shouldMoveSheetForVerticalTranslation:translation.y])
+        {
+            tmpTranslationY = translation.y;
+            newCenter.y += translation.y;
+        }
     }
     else if ([axis isEqualToString:@"xy"])
     {
         NSString *lockedAxis = objc_getAssociatedObject(self, kTiDraggableLockedAxisKey);
 
-        if (lockedAxis == nil && (fabsf(translation.x) > 0.0f || fabsf(translation.y) > 0.0f))
+        if (lockedAxis == nil && (fabs(translation.x) > 0.0f || fabs(translation.y) > 0.0f))
         {
-            lockedAxis = fabsf(translation.x) >= fabsf(translation.y) ? @"x" : @"y";
+            lockedAxis = fabs(translation.x) >= fabs(translation.y) ? @"x" : @"y";
             objc_setAssociatedObject(self, kTiDraggableLockedAxisKey, lockedAxis, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
 
         if ([lockedAxis isEqualToString:@"y"])
         {
-            tmpTranslationY = translation.y;
-            newCenter.y += translation.y;
+            if ([self shouldMoveSheetForVerticalTranslation:translation.y])
+            {
+                tmpTranslationY = translation.y;
+                newCenter.y += translation.y;
+            }
         }
         else
         {
@@ -257,38 +434,54 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
         }
     }
 
-    LayoutConstraint* layoutProperties = [self.proxy layoutProperties];
-
     BOOL updateXLayout = (axis == nil || [axis isEqualToString:@"x"] || [axis isEqualToString:@"xy"]);
     BOOL updateYLayout = (axis == nil || [axis isEqualToString:@"y"] || [axis isEqualToString:@"xy"]);
+    BOOL scrollViewOwnsThisUpdate = _gestureBeganInCoordinatedScrollView &&
+        _verticalPanOwner == TiDraggableVerticalPanOwnerScrollView &&
+        fabs(tmpTranslationX) < 0.001f && fabs(tmpTranslationY) < 0.001f;
 
-    if (updateXLayout)
+    if (!scrollViewOwnsThisUpdate)
     {
-        layoutProperties->left = TiDimensionDip(newCenter.x - size.width / 2);
+        LayoutConstraint* layoutProperties = [self.proxy layoutProperties];
 
-        if (ensureRight)
+        if (updateXLayout)
         {
-            layoutProperties->right = TiDimensionDip(layoutProperties->left.value * -1);
+            layoutProperties->left = TiDimensionDip(newCenter.x - size.width / 2);
+
+            if (ensureRight)
+            {
+                layoutProperties->right = TiDimensionDip(layoutProperties->left.value * -1);
+            }
         }
-    }
 
-    if (updateYLayout)
-    {
-        layoutProperties->top = TiDimensionDip(newCenter.y - size.height / 2);
-
-        if (ensureBottom)
+        if (updateYLayout)
         {
-            layoutProperties->bottom = TiDimensionDip(layoutProperties->top.value * -1);
-        }
-    }
+            layoutProperties->top = TiDimensionDip(newCenter.y - size.height / 2);
 
-    [self.proxy refreshView:nil];
+            if (ensureBottom)
+            {
+                layoutProperties->bottom = TiDimensionDip(layoutProperties->top.value * -1);
+            }
+        }
+
+        [self.proxy refreshView:nil];
+
+        if (_verticalPanOwner == TiDraggableVerticalPanOwnerSheet)
+        {
+            [self pinConfiguredScrollViewToTop];
+        }
+
+        [self updateFollowersForSheetTop:self.proxy.view.frame.origin.y persistLayout:YES];
+    }
 
     [panRecognizer setTranslation:CGPointZero inView:self.proxy.view];
 
-    [self mapProxyOriginToCollection:[self valueForKey:@"maps"]
-                    withTranslationX:tmpTranslationX
-                     andTranslationY:tmpTranslationY];
+    if (!scrollViewOwnsThisUpdate)
+    {
+        [self mapProxyOriginToCollection:[self valueForKey:@"maps"]
+                        withTranslationX:tmpTranslationX
+                         andTranslationY:tmpTranslationY];
+    }
 
     UIGestureRecognizerState gestureState = [panRecognizer state];
     NSString *lockedAxis = objc_getAssociatedObject(self, kTiDraggableLockedAxisKey);
@@ -339,6 +532,13 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
                                                                       properties:tiProps];
     }
 
+    if (gestureState == UIGestureRecognizerStateEnded && !nativeReleaseHandled)
+    {
+        nativeReleaseHandled = [self startNativeVerticalDetentReleaseForRecognizer:panRecognizer
+                                                                         lockedAxis:lockedAxis
+                                                                          properties:tiProps];
+    }
+
     if (gestureState == UIGestureRecognizerStateEnded || gestureState == UIGestureRecognizerStateCancelled)
     {
         [tiProps setObject:[NSNumber numberWithBool:nativeReleaseHandled] forKey:@"nativeReleaseHandled"];
@@ -348,7 +548,9 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     {
         [panningProxy fireEvent:@"start" withObject:tiProps];
     }
-    else if([panningProxy _hasListeners:@"move"] && [panRecognizer state] == UIGestureRecognizerStateChanged)
+    else if([panningProxy _hasListeners:@"move"] &&
+            [panRecognizer state] == UIGestureRecognizerStateChanged &&
+            !scrollViewOwnsThisUpdate)
     {
         [panningProxy fireEvent:@"move" withObject:tiProps];
     }
@@ -361,6 +563,10 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
         {
             [panningProxy fireEvent:@"release" withObject:tiProps];
         }
+
+        _coordinatedScrollView = nil;
+        _gestureBeganInCoordinatedScrollView = NO;
+        _verticalPanOwner = TiDraggableVerticalPanOwnerNone;
     }
 }
 
@@ -504,6 +710,639 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
     [self.proxy refreshView:nil];
 }
 
+- (void)updateGestureCoordination
+{
+    NSDictionary *scrollHandoff = [self valueForKey:@"scrollHandoff"];
+    BOOL enabled = [scrollHandoff isKindOfClass:[NSDictionary class]] &&
+        [[scrollHandoff objectForKey:@"view"] isKindOfClass:[TiViewProxy class]];
+    UIPanGestureRecognizer *panGesture = (UIPanGestureRecognizer *)self.gesture;
+
+    panGesture.delegate = enabled ? self : nil;
+    panGesture.cancelsTouchesInView = !enabled;
+    [self setObservedScrollView:enabled ? [self configuredScrollView] : nil];
+
+    if (!enabled)
+    {
+        _coordinatedScrollView = nil;
+        _gestureBeganInCoordinatedScrollView = NO;
+        _verticalPanOwner = TiDraggableVerticalPanOwnerNone;
+    }
+}
+
+- (void)setObservedScrollView:(UIScrollView *)scrollView
+{
+    if (_observedScrollView == scrollView)
+    {
+        return;
+    }
+
+    if (_observedScrollView != nil)
+    {
+        [_observedScrollView removeObserver:self
+                                 forKeyPath:@"contentOffset"
+                                    context:kTiDraggableContentOffsetContext];
+        [_observedScrollView release];
+        _observedScrollView = nil;
+    }
+
+    if (scrollView != nil)
+    {
+        _observedScrollView = [scrollView retain];
+        [_observedScrollView addObserver:self
+                              forKeyPath:@"contentOffset"
+                                 options:NSKeyValueObservingOptionNew
+                                 context:kTiDraggableContentOffsetContext];
+    }
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change
+                       context:(void *)context
+{
+    if (context == kTiDraggableContentOffsetContext)
+    {
+        UIGestureRecognizerState state = self.gesture.state;
+        BOOL gestureIsActive = state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged;
+
+        if (gestureIsActive && _verticalPanOwner == TiDraggableVerticalPanOwnerSheet && !_isPinningScrollView)
+        {
+            [self pinConfiguredScrollViewToTop];
+        }
+
+        return;
+    }
+
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+- (UIScrollView *)configuredScrollView
+{
+    NSDictionary *scrollHandoff = [self valueForKey:@"scrollHandoff"];
+
+    if (![scrollHandoff isKindOfClass:[NSDictionary class]])
+    {
+        return nil;
+    }
+
+    TiViewProxy *scrollProxy = [scrollHandoff objectForKey:@"view"];
+
+    if (![scrollProxy isKindOfClass:[TiViewProxy class]])
+    {
+        return nil;
+    }
+
+    return [self firstScrollViewInView:[scrollProxy view]];
+}
+
+- (UIScrollView *)firstScrollViewInView:(UIView *)view
+{
+    if ([view isKindOfClass:[UIScrollView class]])
+    {
+        return (UIScrollView *)view;
+    }
+
+    for (UIView *subview in view.subviews)
+    {
+        UIScrollView *scrollView = [self firstScrollViewInView:subview];
+
+        if (scrollView != nil)
+        {
+            return scrollView;
+        }
+    }
+
+    return nil;
+}
+
+- (BOOL)gestureBeganInsideScrollView:(UIScrollView *)scrollView recognizer:(UIPanGestureRecognizer *)panRecognizer
+{
+    if (scrollView == nil || scrollView.hidden || scrollView.alpha <= 0.01f)
+    {
+        return NO;
+    }
+
+    CGPoint location = [panRecognizer locationInView:scrollView];
+    return CGRectContainsPoint(scrollView.bounds, location);
+}
+
+- (CGFloat)topContentOffsetForScrollView:(UIScrollView *)scrollView
+{
+    return -scrollView.adjustedContentInset.top;
+}
+
+- (void)pinConfiguredScrollViewToTop
+{
+    UIScrollView *scrollView = _coordinatedScrollView ?: _observedScrollView;
+
+    if (scrollView == nil || _isPinningScrollView)
+    {
+        return;
+    }
+
+    CGFloat topOffset = [self topContentOffsetForScrollView:scrollView];
+
+    if (fabs(scrollView.contentOffset.y - topOffset) <= 0.01f)
+    {
+        return;
+    }
+
+    CGPoint contentOffset = scrollView.contentOffset;
+    contentOffset.y = topOffset;
+    _isPinningScrollView = YES;
+    [scrollView setContentOffset:contentOffset animated:NO];
+    _isPinningScrollView = NO;
+}
+
+- (BOOL)shouldMoveSheetForVerticalTranslation:(CGFloat)translationY
+{
+    if (!_gestureBeganInCoordinatedScrollView || _coordinatedScrollView == nil)
+    {
+        return YES;
+    }
+
+    NSDictionary *scrollHandoff = [self valueForKey:@"scrollHandoff"];
+    NSString *atTopBehavior = [TiUtils stringValue:[scrollHandoff objectForKey:@"atTopBehavior"]];
+
+    if (![atTopBehavior isEqualToString:@"scroll"] &&
+        ![atTopBehavior isEqualToString:@"dismiss"] &&
+        ![atTopBehavior isEqualToString:@"drag"])
+    {
+        atTopBehavior = @"drag";
+    }
+
+    CGFloat tolerance = MAX(0.0f, [TiUtils floatValue:[scrollHandoff objectForKey:@"topTolerance"] def:1.0f]);
+    CGFloat sheetTop = self.proxy.view.frame.origin.y;
+    CGFloat expandedTop = [self topHandoffPosition];
+    CGFloat scrollTop = [self topContentOffsetForScrollView:_coordinatedScrollView];
+    BOOL sheetIsExpanded = sheetTop <= expandedTop + tolerance;
+    BOOL scrollIsAtTop = _coordinatedScrollView.contentOffset.y <= scrollTop + tolerance;
+
+    if (!sheetIsExpanded)
+    {
+        // The sheet owns vertical movement until it reaches its expanded detent.
+        [self pinConfiguredScrollViewToTop];
+        [self setVerticalPanOwner:TiDraggableVerticalPanOwnerSheet];
+        return YES;
+    }
+
+    if ([atTopBehavior isEqualToString:@"scroll"])
+    {
+        [self setVerticalPanOwner:TiDraggableVerticalPanOwnerScrollView];
+        return NO;
+    }
+
+    if (translationY > 0.0f && scrollIsAtTop)
+    {
+        // Keep the content pinned so the ancestor recognizer can continue the same touch.
+        [self pinConfiguredScrollViewToTop];
+        [self setVerticalPanOwner:TiDraggableVerticalPanOwnerSheet];
+        return YES;
+    }
+
+    if (translationY < 0.0f || !scrollIsAtTop)
+    {
+        [self setVerticalPanOwner:TiDraggableVerticalPanOwnerScrollView];
+        return NO;
+    }
+
+    return _verticalPanOwner == TiDraggableVerticalPanOwnerSheet;
+}
+
+- (void)setVerticalPanOwner:(TiDraggableVerticalPanOwner)owner
+{
+    if (_verticalPanOwner == owner)
+    {
+        return;
+    }
+
+    _verticalPanOwner = owner;
+    TiViewProxy *panningProxy = self.proxy;
+
+    if (![panningProxy _hasListeners:@"handoff"])
+    {
+        return;
+    }
+
+    NSString *ownerName = owner == TiDraggableVerticalPanOwnerSheet ? @"draggable" : @"scroll";
+    NSMutableDictionary *properties = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                       ownerName, @"owner",
+                                       [NSNumber numberWithFloat:self.proxy.view.frame.origin.y], @"top",
+                                       nil];
+
+    if (_coordinatedScrollView != nil)
+    {
+        [properties setObject:[TiUtils pointToDictionary:_coordinatedScrollView.contentOffset] forKey:@"contentOffset"];
+    }
+
+    [panningProxy fireEvent:@"handoff" withObject:properties];
+}
+
+- (NSArray *)sortedDetents
+{
+    id configuredDetents = [self valueForKey:@"detents"];
+    NSMutableArray *detents = [NSMutableArray array];
+
+    if ([configuredDetents isKindOfClass:[NSDictionary class]])
+    {
+        [(NSDictionary *)configuredDetents enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+            NSNumber *top = [TiUtils numberFromObject:value];
+
+            if (top != nil)
+            {
+                [detents addObject:@{ @"name" : [TiUtils stringValue:key], @"top" : top }];
+            }
+        }];
+    }
+    else if ([configuredDetents isKindOfClass:[NSArray class]])
+    {
+        for (id value in (NSArray *)configuredDetents)
+        {
+            if (![value isKindOfClass:[NSDictionary class]])
+            {
+                continue;
+            }
+
+            NSString *name = [TiUtils stringValue:[value objectForKey:@"name"]];
+            NSNumber *top = [TiUtils numberFromObject:[value objectForKey:@"top"]];
+
+            if ([name length] > 0 && top != nil)
+            {
+                [detents addObject:@{ @"name" : name, @"top" : top }];
+            }
+        }
+    }
+
+    [detents sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        NSComparisonResult topComparison = [[left objectForKey:@"top"] compare:[right objectForKey:@"top"]];
+        return topComparison == NSOrderedSame ? [[left objectForKey:@"name"] compare:[right objectForKey:@"name"]] : topComparison;
+    }];
+
+    return detents;
+}
+
+- (NSDictionary *)detentNamed:(NSString *)name
+{
+    if ([name length] == 0)
+    {
+        return nil;
+    }
+
+    for (NSDictionary *detent in [self sortedDetents])
+    {
+        if ([[detent objectForKey:@"name"] isEqualToString:name])
+        {
+            return detent;
+        }
+    }
+
+    return nil;
+}
+
+- (CGFloat)topForDetentReference:(id)reference found:(BOOL *)found
+{
+    NSNumber *top = [reference isKindOfClass:[NSNumber class]] ? reference : nil;
+
+    if (top != nil)
+    {
+        if (found != NULL)
+        {
+            *found = YES;
+        }
+        return [top floatValue];
+    }
+
+    NSDictionary *detent = [self detentNamed:[TiUtils stringValue:reference]];
+
+    if (found != NULL)
+    {
+        *found = detent != nil;
+    }
+
+    return [[detent objectForKey:@"top"] floatValue];
+}
+
+- (CGFloat)topHandoffPosition
+{
+    NSDictionary *scrollHandoff = [self valueForKey:@"scrollHandoff"];
+    NSNumber *configuredTop = [TiUtils numberFromObject:[scrollHandoff objectForKey:@"top"]];
+
+    if (configuredTop != nil)
+    {
+        return [configuredTop floatValue];
+    }
+
+    NSArray *detents = [self sortedDetents];
+
+    if ([detents count] > 0)
+    {
+        return [[[detents objectAtIndex:0] objectForKey:@"top"] floatValue];
+    }
+
+    NSNumber *minTop = [TiUtils numberFromObject:[self valueForKey:@"minTop"]];
+    return minTop != nil ? [minTop floatValue] : self.proxy.view.frame.origin.y;
+}
+
+- (BOOL)startNativeVerticalDetentReleaseForRecognizer:(UIPanGestureRecognizer *)panRecognizer
+                                           lockedAxis:(NSString *)lockedAxis
+                                            properties:(NSMutableDictionary *)properties
+{
+    NSArray *detents = [self sortedDetents];
+
+    if ([detents count] == 0)
+    {
+        return NO;
+    }
+
+    if (_gestureBeganInCoordinatedScrollView && _verticalPanOwner != TiDraggableVerticalPanOwnerSheet)
+    {
+        // A content-only scroll must never trigger a sheet detent release.
+        return NO;
+    }
+
+    NSString *axis = [self valueForKey:@"axis"];
+    CGPoint distance = CGPointMake(touchEnd.x - touchStart.x, touchEnd.y - touchStart.y);
+    CGPoint velocity = [panRecognizer velocityInView:self.proxy.view.superview ?: self.proxy.view];
+    BOOL isVerticalRelease = [axis isEqualToString:@"y"] ||
+        ([axis isEqualToString:@"xy"] && [lockedAxis isEqualToString:@"y"]);
+
+    if (axis == nil)
+    {
+        isVerticalRelease = fabs(velocity.y) > fabs(velocity.x);
+
+        if (fabs(velocity.x) < 1.0f && fabs(velocity.y) < 1.0f)
+        {
+            isVerticalRelease = fabs(distance.y) > fabs(distance.x);
+        }
+    }
+
+    if (!isVerticalRelease)
+    {
+        return NO;
+    }
+
+    CGFloat currentTop = self.proxy.view.frame.origin.y;
+    CGFloat velocityThreshold = MAX(0.0f, [TiUtils floatValue:[self valueForKey:@"detentVelocityThreshold"] def:500.0f]);
+    NSDictionary *targetDetent = nil;
+    NSString *releaseAction = @"detent";
+    NSDictionary *scrollHandoff = [self valueForKey:@"scrollHandoff"];
+    NSString *atTopBehavior = [TiUtils stringValue:[scrollHandoff objectForKey:@"atTopBehavior"]];
+    CGFloat dismissThreshold = MAX(0.0f, [TiUtils floatValue:[scrollHandoff objectForKey:@"dismissThreshold"] def:120.0f]);
+    BOOL beganAtExpandedTop = touchStart.y <= [self topHandoffPosition] + 1.0f;
+    BOOL shouldDismiss = [atTopBehavior isEqualToString:@"dismiss"] &&
+        _gestureBeganInCoordinatedScrollView && beganAtExpandedTop &&
+        ((dismissThreshold > 0.0f && distance.y >= dismissThreshold) ||
+         (velocityThreshold > 0.0f && velocity.y >= velocityThreshold));
+
+    if (shouldDismiss)
+    {
+        targetDetent = [self detentNamed:[TiUtils stringValue:[scrollHandoff objectForKey:@"dismissDetent"]]];
+        targetDetent = targetDetent ?: [detents lastObject];
+        releaseAction = @"dismiss";
+    }
+    else if (velocityThreshold > 0.0f && velocity.y >= velocityThreshold)
+    {
+        for (NSDictionary *detent in detents)
+        {
+            if ([[detent objectForKey:@"top"] floatValue] > currentTop + 1.0f)
+            {
+                targetDetent = detent;
+                break;
+            }
+        }
+        targetDetent = targetDetent ?: [detents lastObject];
+    }
+    else if (velocityThreshold > 0.0f && velocity.y <= -velocityThreshold)
+    {
+        for (NSDictionary *detent in [detents reverseObjectEnumerator])
+        {
+            if ([[detent objectForKey:@"top"] floatValue] < currentTop - 1.0f)
+            {
+                targetDetent = detent;
+                break;
+            }
+        }
+        targetDetent = targetDetent ?: [detents objectAtIndex:0];
+    }
+    else
+    {
+        CGFloat shortestDistance = CGFLOAT_MAX;
+
+        for (NSDictionary *detent in detents)
+        {
+            CGFloat candidateDistance = fabs([[detent objectForKey:@"top"] floatValue] - currentTop);
+
+            if (candidateDistance < shortestDistance)
+            {
+                shortestDistance = candidateDistance;
+                targetDetent = detent;
+            }
+        }
+    }
+
+    if (targetDetent == nil || properties == nil)
+    {
+        return NO;
+    }
+
+    [properties setObject:[NSNumber numberWithBool:YES] forKey:@"nativeReleaseHandled"];
+    [properties setObject:releaseAction forKey:@"releaseAction"];
+    [properties setObject:[targetDetent objectForKey:@"name"] forKey:@"detent"];
+    [self animateToDetent:targetDetent velocity:velocity.y animated:YES releaseAction:releaseAction properties:properties];
+
+    return YES;
+}
+
+- (void)animateToDetent:(NSDictionary *)detent
+               velocity:(CGFloat)velocity
+               animated:(BOOL)animated
+          releaseAction:(NSString *)releaseAction
+             properties:(NSMutableDictionary *)properties
+{
+    if (detent == nil || ![self.proxy viewReady])
+    {
+        return;
+    }
+
+    UIView *view = self.proxy.view;
+    CGFloat targetTop = [[detent objectForKey:@"top"] floatValue];
+    CGPoint targetCenter = view.center;
+    targetCenter.y = targetTop + view.frame.size.height / 2.0f;
+    CGFloat remainingDistance = targetCenter.y - view.center.y;
+    CGFloat initialSpringVelocity = fabs(remainingDistance) > 0.5f ? velocity / remainingDistance : 0.0f;
+    initialSpringVelocity = MIN(20.0f, MAX(-20.0f, initialSpringVelocity));
+    NSTimeInterval duration = MAX(0.05, [TiUtils doubleValue:[self valueForKey:@"detentDuration"] def:0.42]);
+    CGFloat damping = MIN(1.0f, MAX(0.01f, [TiUtils floatValue:[self valueForKey:@"detentDamping"] def:0.86f]));
+    NSMutableDictionary *eventProperties = properties != nil ? [[properties mutableCopy] autorelease] : [NSMutableDictionary dictionary];
+
+    [eventProperties setObject:[detent objectForKey:@"name"] forKey:@"detent"];
+    [eventProperties setObject:[NSNumber numberWithFloat:targetTop] forKey:@"top"];
+    [eventProperties setObject:releaseAction ?: @"detent" forKey:@"releaseAction"];
+
+    if ([self.proxy _hasListeners:@"detentwillchange"])
+    {
+        [self.proxy fireEvent:@"detentwillchange" withObject:eventProperties];
+    }
+
+    void (^animations)(void) = ^{
+        view.center = targetCenter;
+        [self updateFollowersForSheetTop:targetTop persistLayout:NO];
+    };
+
+    void (^completion)(BOOL) = ^(BOOL finished) {
+        if (!finished)
+        {
+            return;
+        }
+
+        [self persistCurrentViewPositionUpdatingX:NO updatingY:YES];
+        [self updateFollowersForSheetTop:targetTop persistLayout:YES];
+        [eventProperties setObject:[TiUtils pointToDictionary:view.center] forKey:@"center"];
+
+        if ([self.proxy _hasListeners:@"detentchange"])
+        {
+            [self.proxy fireEvent:@"detentchange" withObject:eventProperties];
+        }
+
+        if ([releaseAction isEqualToString:@"dismiss"] && [self.proxy _hasListeners:@"dismiss"])
+        {
+            [self.proxy fireEvent:@"dismiss" withObject:eventProperties];
+        }
+    };
+
+    if (!animated)
+    {
+        animations();
+        completion(YES);
+        return;
+    }
+
+    [UIView animateWithDuration:duration
+                          delay:0.0
+         usingSpringWithDamping:damping
+          initialSpringVelocity:initialSpringVelocity
+                        options:UIViewAnimationOptionBeginFromCurrentState | UIViewAnimationOptionAllowUserInteraction
+                     animations:animations
+                     completion:completion];
+}
+
+- (void)updateFollowersForSheetTop:(CGFloat)sheetTop persistLayout:(BOOL)persistLayout
+{
+    NSArray *followers = [self valueForKey:@"followers"];
+
+    if (![followers isKindOfClass:[NSArray class]])
+    {
+        return;
+    }
+
+    for (id value in followers)
+    {
+        if (![value isKindOfClass:[NSDictionary class]])
+        {
+            continue;
+        }
+
+        NSDictionary *follower = value;
+        TiViewProxy *proxy = [follower objectForKey:@"view"];
+
+        if (![proxy isKindOfClass:[TiViewProxy class]] || ![proxy viewReady])
+        {
+            continue;
+        }
+
+        UIView *followerView = [proxy view];
+
+        if ([TiUtils boolValue:[follower objectForKey:@"bringToFront"] def:YES] && followerView.superview != nil)
+        {
+            [followerView.superview bringSubviewToFront:followerView];
+        }
+
+        BOOL foundAttachDetent = NO;
+        CGFloat attachTop = [self topForDetentReference:[follower objectForKey:@"attachUntil"] found:&foundAttachDetent];
+        // Below attachUntil the follower tracks 1:1; above it the follower is clamped.
+        CGFloat anchorTop = foundAttachDetent ? MAX(sheetTop, attachTop) : sheetTop;
+        id gapValue = [follower objectForKey:@"gap"];
+        CGFloat offset = gapValue != nil
+            ? -[TiUtils floatValue:gapValue def:12.0f]
+            : [TiUtils floatValue:[follower objectForKey:@"offset"] def:-12.0f];
+        CGRect frame = followerView.frame;
+        frame.origin.y = anchorTop + offset - frame.size.height;
+        followerView.frame = frame;
+
+        if (persistLayout)
+        {
+            LayoutConstraint *layoutProperties = [proxy layoutProperties];
+            layoutProperties->top = TiDimensionDip(frame.origin.y);
+        }
+
+        NSArray *fadeBetween = [follower objectForKey:@"fadeBetween"];
+
+        if ([fadeBetween isKindOfClass:[NSArray class]] && [fadeBetween count] >= 2)
+        {
+            BOOL foundVisibleDetent = NO;
+            BOOL foundHiddenDetent = NO;
+            CGFloat visibleTop = [self topForDetentReference:[fadeBetween objectAtIndex:0] found:&foundVisibleDetent];
+            CGFloat hiddenTop = [self topForDetentReference:[fadeBetween objectAtIndex:1] found:&foundHiddenDetent];
+
+            if (foundVisibleDetent && foundHiddenDetent && fabs(hiddenTop - visibleTop) > 0.5f)
+            {
+                CGFloat progress = (sheetTop - visibleTop) / (hiddenTop - visibleTop);
+                progress = MIN(1.0f, MAX(0.0f, progress));
+                CGFloat visibleAlpha = [TiUtils floatValue:[follower objectForKey:@"visibleAlpha"] def:1.0f];
+                CGFloat hiddenAlpha = [TiUtils floatValue:[follower objectForKey:@"hiddenAlpha"] def:0.0f];
+                CGFloat alpha = visibleAlpha + (hiddenAlpha - visibleAlpha) * progress;
+                followerView.alpha = alpha;
+
+                if ([TiUtils boolValue:[follower objectForKey:@"disableTouchesWhenHidden"] def:YES])
+                {
+                    NSNumber *originalInteraction = objc_getAssociatedObject(followerView, kTiDraggableFollowerInteractionKey);
+
+                    if (originalInteraction == nil)
+                    {
+                        originalInteraction = [NSNumber numberWithBool:followerView.userInteractionEnabled];
+                        objc_setAssociatedObject(followerView, kTiDraggableFollowerInteractionKey, originalInteraction, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                    }
+
+                    followerView.userInteractionEnabled = alpha > MIN(visibleAlpha, hiddenAlpha) + 0.01f
+                        ? [originalInteraction boolValue]
+                        : NO;
+                }
+            }
+        }
+    }
+}
+
+- (void)cancelFollowerAnimations
+{
+    NSArray *followers = [self valueForKey:@"followers"];
+
+    if (![followers isKindOfClass:[NSArray class]])
+    {
+        return;
+    }
+
+    for (NSDictionary *follower in followers)
+    {
+        TiViewProxy *proxy = [follower objectForKey:@"view"];
+
+        if (![proxy isKindOfClass:[TiViewProxy class]] || ![proxy viewReady])
+        {
+            continue;
+        }
+
+        UIView *view = [proxy view];
+        CALayer *presentationLayer = view.layer.presentationLayer;
+
+        if (presentationLayer != nil)
+        {
+            view.frame = presentationLayer.frame;
+            view.alpha = presentationLayer.opacity;
+        }
+
+        [view.layer removeAllAnimations];
+    }
+}
+
 - (void)correctMappedProxyPositions
 {
     NSArray* maps = [self valueForKey:@"maps"];
@@ -624,7 +1463,8 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
 
                     float xDistance = [parentMaxLeft floatValue] - [parentMinLeft floatValue];
                     float xCalcCenter = proxySize.width / 2;
-                    float xWidth, xStartParallax, xEndParallax, xRatio;
+                    float xWidth, xRatio;
+                    float xStartParallax = 0.0f;
 
                     if (xStart && xEnd)
                     {
@@ -709,7 +1549,8 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
 
                     float yDistance = [parentMaxTop floatValue] - [parentMinTop floatValue];
                     float yCalcCenter = proxySize.height / 2;
-                    float yHeight, yStartParallax, yEndParallax, yRatio;
+                    float yHeight, yRatio;
+                    float yStartParallax = 0.0f;
 
                     if (yStart && yEnd)
                     {
@@ -849,11 +1690,21 @@ static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
 #pragma mark - UIGestureRecognizerDelegate
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch
 {
-    if ([touch.view isDescendantOfView:self.proxy.view]) {
+    return YES;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+        shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer
+{
+    UIScrollView *scrollView = _coordinatedScrollView ?: [self configuredScrollView];
+
+    if (scrollView == nil)
+    {
         return NO;
     }
 
-    return YES;
+    return gestureRecognizer == scrollView.panGestureRecognizer ||
+        otherGestureRecognizer == scrollView.panGestureRecognizer;
 }
 
 @end

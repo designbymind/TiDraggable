@@ -44,6 +44,12 @@
     CGPoint touchStart;
     CGPoint touchStartCenter;
     CGPoint touchEnd;
+    UIScrollView *_coordinatedScrollView;
+    UIScrollView *_observedScrollView;
+    BOOL _gestureBeganInCoordinatedScrollView;
+    BOOL _isPinningScrollView;
+    NSInteger _verticalPanOwner;
+    BOOL _didApplyInitialDetent;
 }
 
 - (id)initWithProxy:(TiViewProxy*)proxy andOptions:(NSDictionary*)options;

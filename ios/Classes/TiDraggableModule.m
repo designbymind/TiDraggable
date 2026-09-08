@@ -66,7 +66,8 @@
 
     if (proxy)
     {
-        [[TiDraggableGesture alloc] initWithProxy:proxy andOptions:options];
+        TiDraggableGesture *gesture = [[TiDraggableGesture alloc] initWithProxy:proxy andOptions:options];
+        [gesture release];
     }
 }
 
@@ -114,7 +115,8 @@
     {
         NSDictionary* options = [proxy valueForKeyPath:@"draggableConfig"];
 
-        [[TiDraggableGesture alloc] initWithProxy:proxy andOptions:options];
+        TiDraggableGesture *gesture = [[TiDraggableGesture alloc] initWithProxy:proxy andOptions:options];
+        [gesture release];
     }
 
     return proxy;

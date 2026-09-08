@@ -36,64 +36,184 @@
  * limitations under the License.
  */
 
-(function () {
-  'use strict';
+var Draggable = require('ti.draggable');
+var screenHeight = Ti.Platform.displayCaps.platformHeight;
+var expandedTop = Ti.UI.statusBarHeight + 5 + 36 + 16;
+var middleTop = Math.round(screenHeight * 0.43);
+// var collapsedTop = Math.round(screenHeight * 0.73);
+var collapsedTop = Ti.Platform.displayCaps.platformHeight - 106; // 72 + 34 (bottom safe area)
+var mainWindow = Ti.UI.createWindow({
+	backgroundColor: '#dbe8d4'
+	// fullscreen: true
+});
+var rows = [];
+var index;
 
-  var Draggable = require('ti.draggable'),
-    mainWindow = Ti.UI.createWindow({
-      backgroundColor: 'white',
-      exitOnClose: true,
-      fullscreen: true,
-    }),
-    subscribe = function (proxy, observer) {
-      var key, events, eIndex;
+for (index = 1; index <= 40; index += 1) {
+	rows.push({
+		title: 'Nearby place ' + index,
+		color: '#18201b',
+		height: 58
+	});
+}
 
-      for (key in observer) {
-        if (typeof observer[key] === 'function') {
-          events = key.split(' ');
+mainWindow.add(
+	Ti.UI.createLabel({
+		text: 'Map content',
+		top: 145,
+		color: '#647162',
+		font: { fontSize: 28, fontWeight: 'bold' }
+	})
+);
 
-          for (eIndex in events) {
-            proxy.addEventListener(events[eIndex], observer[key]);
-          }
-        }
-      }
-    },
-    createDraggableSquare = function (name, color, axis) {
-      var view = Draggable.createView({
-        width: 300,
-        height: 300,
-        borderRadius: 3,
-        backgroundColor: color || 'black',
-        draggableConfig: {
-          axis: axis,
-          minLeft: 0,
-          maxLeft: Ti.Platform.displayCaps.platformWidth - 100,
-          minTop: 0,
-          maxTop: Ti.Platform.displayCaps.platformHeight - 100,
-        },
-      });
+var mapButtons = Ti.UI.createView({
+	right: 16,
+	top: collapsedTop - 116,
+	width: 48,
+	height: 104,
+	layout: 'vertical'
+});
 
-      var slider = Ti.UI.createSlider({});
-      view.add(slider);
+mapButtons.add(
+	Ti.UI.createButton({
+		title: '+',
+		width: 48,
+		height: 48,
+		borderRadius: 24,
+		backgroundColor: 'white',
+		color: '#18201b'
+	})
+);
+mapButtons.add(
+	Ti.UI.createButton({
+		title: '◎',
+		top: 8,
+		width: 48,
+		height: 48,
+		borderRadius: 24,
+		backgroundColor: 'white',
+		color: '#18201b'
+	})
+);
 
-      view.add(
-        Ti.UI.createLabel({
-          text: name,
-        }),
-      );
+var tableView = Ti.UI.createTableView({
+	top: 72,
+	left: 0,
+	right: 0,
+	bottom: 0,
+	backgroundColor: 'transparent',
+	separatorColor: '#e7e7e7',
+	data: rows
+});
 
-      subscribe(view, {
-        'start move end cancel': function (e) {
-          console.log('Event: ' + e.type, 'Left: ' + e.left, 'Top: ' + e.top);
-        },
-      });
+var sheet = Draggable.createView({
+	top: collapsedTop,
+	left: 0,
+	right: 0,
+	height: screenHeight - expandedTop,
+	borderRadius: 24,
+	backgroundColor: '#ffffff',
+	draggableConfig: {
+		axis: 'y',
+		detents: {
+			expanded: expandedTop,
+			middle: middleTop,
+			collapsed: collapsedTop
+		},
+		initialDetent: 'collapsed',
+		detentVelocityThreshold: 500,
+		scrollHandoff: {
+			view: tableView,
+			atTopBehavior: 'drag',
+			dismissThreshold: 120,
+			dismissDetent: 'collapsed'
+		},
+		followers: [
+			{
+				view: mapButtons,
+				attachUntil: 'middle',
+				offset: -12,
+				fadeBetween: ['middle', 'expanded'],
+				disableTouchesWhenHidden: true
+			}
+		]
+	}
+});
 
-      return view;
-    };
+sheet.add(
+	Ti.UI.createView({
+		top: 10,
+		width: 42,
+		height: 5,
+		borderRadius: 3,
+		backgroundColor: '#c3c5c4'
+	})
+);
+sheet.add(
+	Ti.UI.createView({
+		top: 72,
+		width: Ti.UI.FILL,
+		height: 1,
+		backgroundColor: '#000000'
+	})
+);
+sheet.add(
+	Ti.UI.createLabel({
+		text: 'Nearby homes',
+		top: 28,
+		left: 20,
+		color: '#18201b',
+		font: { fontSize: 24, fontWeight: 'bold' }
+	})
+);
+sheet.add(tableView);
 
-  // mainWindow.add(createDraggableSquare('Horizontal', 'red', 'x'));
-  mainWindow.add(createDraggableSquare('Vertical', 'blue', 'y'));
-  // mainWindow.add(createDraggableSquare('Free', 'green'));
+var policyLabel = Ti.UI.createLabel({
+	text: 'At top: drag',
+	top: 44,
+	left: 16,
+	color: '#18201b',
+	font: { fontSize: 14, fontWeight: 'semibold' }
+});
+var policyButtons = Ti.UI.createView({
+	top: Ti.UI.statusBarHeight + 5 + 8,
+	left: 12,
+	height: 36,
+	layout: 'horizontal'
+});
 
-  mainWindow.open();
-})();
+['drag', 'scroll', 'dismiss'].forEach(function (behavior) {
+	var button = Ti.UI.createButton({
+		title: behavior,
+		width: 82,
+		height: 34,
+		right: 6,
+		borderRadius: 17,
+		backgroundColor: '#ffffff',
+		color: '#18201b',
+		font: { fontSize: 13 }
+	});
+
+	button.addEventListener('click', function () {
+		sheet.draggable.setConfig('scrollHandoff.atTopBehavior', behavior);
+		policyLabel.text = 'At top: ' + behavior;
+	});
+	policyButtons.add(button);
+});
+
+sheet.addEventListener('handoff', function (event) {
+	Ti.API.info('Handoff owner: ' + event.owner);
+});
+sheet.addEventListener('detentchange', function (event) {
+	Ti.API.info('Settled at detent: ' + event.detent);
+});
+sheet.addEventListener('dismiss', function () {
+	Ti.API.info('Dismiss policy reached its target detent');
+});
+
+mainWindow.add(mapButtons);
+mainWindow.add(sheet);
+mainWindow.add(policyLabel);
+mainWindow.add(policyButtons);
+
+mainWindow.open();

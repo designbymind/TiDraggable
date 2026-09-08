@@ -14,6 +14,7 @@ An enhanced fork of the original [TiDraggable](https://github.com/pec1985/TiDrag
 - Added `ensureRight` and `ensureBottom`, this allows for stable dragging of views where the dimensions are not known.
 - Added `enabled` boolean property for toggeling drag
 - Views can be mapped and translated with a draggable view.
+- iOS: Added native bottom-sheet detents, nested scroll handoff, and detent-aware follower views.
 - Draggable implementation now has its own configurable property called `draggable`.
 - iOS: Supports all Ti.UI.View subclasses and Ti.UI.View wrapped views (View, Window, Label)
 - Android: Fixed a bug where touch events were not correctly passed to children or bubbled to the parent.
@@ -96,6 +97,118 @@ When `axis` is set to `xy`, the drag locks to the first dominant direction of th
 This means the view can move horizontally or vertically, but not diagonally during the same drag.
 
 If `axis` is omitted, the view can move freely on both axes.
+
+## Native Bottom-Sheet Handoff (iOS)
+
+Version 4.4.0 can coordinate a vertical draggable view with a descendant `Ti.UI.TableView`, `Ti.UI.ListView`, or `Ti.UI.ScrollView`. The inner scroll view scrolls while the sheet is expanded. A downward gesture first returns the inner content to its adjusted top offset, then transfers the same gesture to the draggable sheet without waiting for JavaScript.
+
+```javascript
+var tableView = Ti.UI.createTableView({
+  top: 72,
+  bottom: 0,
+  data: rows
+});
+
+var mapButtons = Ti.UI.createView({
+  right: 16,
+  width: 48,
+  height: 104
+});
+
+var expandedTop = 80;
+var screenHeight = Ti.Platform.displayCaps.platformHeight;
+
+var sheet = Draggable.createView({
+  top: 700,
+  left: 0,
+  right: 0,
+  height: screenHeight - expandedTop,
+  draggableConfig: {
+    axis: 'y',
+    detents: {
+      expanded: expandedTop,
+      middle: 420,
+      collapsed: 700
+    },
+    initialDetent: 'collapsed',
+    scrollHandoff: {
+      view: tableView,
+      atTopBehavior: 'drag'
+    },
+    followers: [{
+      view: mapButtons,
+      attachUntil: 'middle',
+      offset: -12,
+      fadeBetween: ['middle', 'expanded'],
+      disableTouchesWhenHidden: true
+    }]
+  }
+});
+
+sheet.add(tableView);
+window.add(mapButtons); // Followers should be siblings of the sheet.
+window.add(sheet);
+```
+
+All per-frame scrolling, dragging, snapping, follower positioning, and fading occurs in UIKit. JavaScript receives lifecycle events only.
+
+### Detents
+
+`detents` accepts a dictionary of names and absolute `top` positions. Names are arbitrary and positions are sorted from smallest (expanded) to largest (collapsed). When detents are configured they also become the vertical drag bounds.
+
+- `initialDetent` (`String`) — Positions the sheet at a named detent after its native view is ready.
+- `detentVelocityThreshold` (`Number`, default `500`) — Vertical velocity in points per second that advances to the next detent in the release direction.
+- `detentDuration` (`Number`, default `0.42`) — Native snap duration in seconds.
+- `detentDamping` (`Number`, default `0.86`) — Native snap spring damping ratio from `0.01` through `1.0`.
+
+Move to a detent programmatically:
+
+```javascript
+sheet.draggable.setDetent('middle');
+sheet.draggable.setDetent('expanded', { animated: false });
+```
+
+### Scroll Handoff
+
+`scrollHandoff.view` is the descendant TableView, ListView, or ScrollView to coordinate. `atTopBehavior` may be changed at runtime:
+
+```javascript
+sheet.draggable.setConfig('scrollHandoff.atTopBehavior', 'scroll');
+sheet.draggable.setConfig('scrollHandoff.atTopBehavior', 'drag');
+sheet.draggable.setConfig('scrollHandoff.atTopBehavior', 'dismiss');
+```
+
+- `drag` (default) — A downward pull transfers from the inner content to the sheet when the content reaches its adjusted top offset.
+- `scroll` — The inner view retains downward pulls while the sheet is expanded, including its normal edge behavior.
+- `dismiss` — Uses the same native handoff as `drag`, then targets `dismissDetent` and emits `dismiss` when the release passes `dismissThreshold` or `detentVelocityThreshold`.
+- `top` (`Number`) — Optional expanded sheet position used for handoff when no detents are configured. Otherwise the smallest detent or `minTop` is used.
+- `topTolerance` (`Number`, default `1`) — Content and sheet top-edge tolerance in points.
+- `dismissThreshold` (`Number`, default `120`) — Downward distance required for the `dismiss` policy.
+- `dismissDetent` (`String`) — Named dismissal target. Defaults to the largest configured detent.
+
+The module does not remove the sheet automatically. Handle the `dismiss` event to close, hide, or recycle it after the native motion completes.
+
+Size the sheet so its bottom edge meets the window bottom at the expanded detent (`height: screenHeight - expandedTop`). Extra offscreen height also enlarges the native scroll view's viewport and can leave its final rows below the visible window.
+
+### Follower Views
+
+`followers` keeps sibling controls visually attached to the sheet without JavaScript `move` events. This is useful for map buttons or other controls that should travel with a collapsed sheet, clamp at a middle detent, and fade as the sheet expands.
+
+- `view` (`Ti.UI.View`, required) — A sibling of the draggable sheet.
+- `attachUntil` (`String` or `Number`) — Detent name or sheet top where the follower stops moving upward.
+- `offset` (`Number`, default `-12`) — Vertical offset from the sheet top to the follower's bottom edge. A negative value creates a gap above the sheet.
+- `gap` (`Number`) — Positive shorthand for a gap above the sheet; overrides `offset`.
+- `fadeBetween` (`Array`) — Two detent names or numeric tops: fully visible first, fully hidden second.
+- `visibleAlpha` / `hiddenAlpha` (`Number`, defaults `1` / `0`) — Alpha endpoints.
+- `bringToFront` (`Boolean`, default `true`) — Keeps the follower above the sheet so its detent fade remains visible. Set to `false` when the application manages sibling z-order itself.
+- `disableTouchesWhenHidden` (`Boolean`, default `true`) — Disables native hit testing at the hidden endpoint and restores the view's original interaction state when visible.
+
+The sheet emits these lifecycle events:
+
+- `handoff` — Gesture ownership changes; `owner` is `scroll` or `draggable`.
+- `detentwillchange` — A native detent animation is about to begin.
+- `detentchange` — The native detent animation completed; includes `detent` and `top`.
+- `dismiss` — A `dismiss` policy release completed at its dismissal detent.
 
 ## Native Horizontal Release (iOS)
 

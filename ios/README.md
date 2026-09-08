@@ -1,4 +1,4 @@
-# [TiDraggable](https://github.com/animecyc/TiDraggable) - Native Draggable Views
+# [TiDraggable](https://github.com/designbymind/TiDraggable) - Native Draggable Views
 
 An enhanced fork of the original [TiDraggable](https://github.com/pec1985/TiDraggable) module by [Pedro](http://twitter.com/pecdev) [Enrique](https://github.com/pec1985), allows for simple creation of "draggable" views.
 
@@ -6,9 +6,11 @@ An enhanced fork of the original [TiDraggable](https://github.com/pec1985/TiDrag
 
 In your `tiapp.xml` file add the following to the `modules` node:
 
-	<module version="2.0.0">ti.draggable<module>
+	<module version="4.4.0">ti.draggable</module>
 
 ## Usage
+
+See the [root README](../README.md) for the 4.4.0 bottom-sheet detents, native scroll handoff, and follower-view APIs.
 
 ```javascript
 var Draggable = require('ti.draggable'),
