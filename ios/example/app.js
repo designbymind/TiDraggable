@@ -142,6 +142,7 @@ var sheet = Draggable.createView({
 				offset: -12,
 				fadeBetween: ['middle', 'expanded'],
 				bringToFront: false,
+				passThroughTouches: true,
 				disableTouchesWhenHidden: true
 			}
 		]

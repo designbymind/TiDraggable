@@ -41,7 +41,90 @@
 
 static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
 static const void *kTiDraggableFollowerInteractionKey = &kTiDraggableFollowerInteractionKey;
+static const void *kTiDraggableFollowerOriginalClassKey = &kTiDraggableFollowerOriginalClassKey;
 static void *kTiDraggableContentOffsetContext = &kTiDraggableContentOffsetContext;
+
+static UIView *TiDraggableFollowerPassThroughHitTest(id view, SEL selector, CGPoint point, UIEvent *event)
+{
+    Class currentClass = object_getClass(view);
+    struct objc_super superInfo = {
+        .receiver = view,
+        .super_class = class_getSuperclass(currentClass)
+    };
+    UIView *hitView = ((UIView *(*)(struct objc_super *, SEL, CGPoint, UIEvent *))objc_msgSendSuper)(&superInfo, selector, point, event);
+
+    return hitView == view ? nil : hitView;
+}
+
+static Class TiDraggableFollowerPassThroughSubclass(Class originalClass)
+{
+    NSString *subclassName = [NSString stringWithFormat:@"TiDraggableFollowerPassThrough_%@", NSStringFromClass(originalClass)];
+    subclassName = [subclassName stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+    Class subclass = NSClassFromString(subclassName);
+
+    if (subclass != Nil)
+    {
+        return class_getSuperclass(subclass) == originalClass ? subclass : Nil;
+    }
+
+    @synchronized([TiDraggableGesture class])
+    {
+        subclass = NSClassFromString(subclassName);
+
+        if (subclass == Nil)
+        {
+            subclass = objc_allocateClassPair(originalClass, [subclassName UTF8String], 0);
+            Method hitTestMethod = class_getInstanceMethod(originalClass, @selector(hitTest:withEvent:));
+
+            if (subclass == Nil || hitTestMethod == NULL || !class_addMethod(subclass,
+                                                                            @selector(hitTest:withEvent:),
+                                                                            (IMP)TiDraggableFollowerPassThroughHitTest,
+                                                                            method_getTypeEncoding(hitTestMethod)))
+            {
+                if (subclass != Nil)
+                {
+                    objc_disposeClassPair(subclass);
+                }
+
+                return Nil;
+            }
+
+            objc_registerClassPair(subclass);
+        }
+    }
+
+    return class_getSuperclass(subclass) == originalClass ? subclass : Nil;
+}
+
+static void TiDraggableSetFollowerPassThroughTouches(UIView *view, BOOL enabled)
+{
+    Class originalClass = (Class)objc_getAssociatedObject(view, kTiDraggableFollowerOriginalClassKey);
+
+    if (enabled)
+    {
+        if (originalClass != Nil)
+        {
+            return;
+        }
+
+        originalClass = object_getClass(view);
+        Class passThroughClass = TiDraggableFollowerPassThroughSubclass(originalClass);
+
+        if (passThroughClass != Nil)
+        {
+            objc_setAssociatedObject(view, kTiDraggableFollowerOriginalClassKey, originalClass, OBJC_ASSOCIATION_ASSIGN);
+            object_setClass(view, passThroughClass);
+        }
+
+        return;
+    }
+
+    if (originalClass != Nil)
+    {
+        object_setClass(view, originalClass);
+        objc_setAssociatedObject(view, kTiDraggableFollowerOriginalClassKey, nil, OBJC_ASSOCIATION_ASSIGN);
+    }
+}
 
 typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     TiDraggableVerticalPanOwnerNone = 0,
@@ -88,6 +171,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 {
     if (self = [super init])
     {
+        _passThroughFollowerViews = [[NSMutableSet alloc] init];
         self.proxy = proxy;
         UIPanGestureRecognizer *panGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panDetected:)];
         self.gesture = panGesture;
@@ -135,6 +219,13 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
 - (void)dealloc
 {
+    for (UIView *view in _passThroughFollowerViews)
+    {
+        TiDraggableSetFollowerPassThroughTouches(view, NO);
+    }
+
+    [_passThroughFollowerViews release];
+    _passThroughFollowerViews = nil;
     [self setObservedScrollView:nil];
     self.gesture.delegate = nil;
     self.gesture = nil;
@@ -1232,8 +1323,16 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
     if (![followers isKindOfClass:[NSArray class]])
     {
+        for (UIView *view in _passThroughFollowerViews)
+        {
+            TiDraggableSetFollowerPassThroughTouches(view, NO);
+        }
+
+        [_passThroughFollowerViews removeAllObjects];
         return;
     }
+
+    NSMutableSet *activePassThroughViews = [NSMutableSet set];
 
     for (id value in followers)
     {
@@ -1251,6 +1350,14 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         }
 
         UIView *followerView = [proxy view];
+        BOOL passThroughTouches = [TiUtils boolValue:[follower objectForKey:@"passThroughTouches"] def:NO];
+
+        TiDraggableSetFollowerPassThroughTouches(followerView, passThroughTouches);
+
+        if (passThroughTouches)
+        {
+            [activePassThroughViews addObject:followerView];
+        }
 
         if ([TiUtils boolValue:[follower objectForKey:@"bringToFront"] def:YES] && followerView.superview != nil)
         {
@@ -1310,6 +1417,16 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
             }
         }
     }
+
+    for (UIView *view in [[_passThroughFollowerViews copy] autorelease])
+    {
+        if (![activePassThroughViews containsObject:view])
+        {
+            TiDraggableSetFollowerPassThroughTouches(view, NO);
+        }
+    }
+
+    [_passThroughFollowerViews setSet:activePassThroughViews];
 }
 
 - (void)cancelFollowerAnimations

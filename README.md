@@ -140,6 +140,7 @@ var sheet = Draggable.createView({
       attachUntil: 'middle',
       offset: -12,
       fadeBetween: ['middle', 'expanded'],
+      passThroughTouches: true,
       disableTouchesWhenHidden: true
     }]
   }
@@ -201,6 +202,7 @@ Size the sheet so its bottom edge meets the window bottom at the expanded detent
 - `fadeBetween` (`Array`) — Two detent names or numeric tops: fully visible first, fully hidden second.
 - `visibleAlpha` / `hiddenAlpha` (`Number`, defaults `1` / `0`) — Alpha endpoints.
 - `bringToFront` (`Boolean`, default `true`) — Keeps the follower above the sheet so its detent fade remains visible. Set to `false` when the application manages sibling z-order itself.
+- `passThroughTouches` (`Boolean`, default `false`) — Passes touches on the follower's root view to underlying content while preserving normal touch handling for every child and nested descendant.
 - `disableTouchesWhenHidden` (`Boolean`, default `true`) — Disables native hit testing at the hidden endpoint and restores the view's original interaction state when visible.
 
 The sheet emits these lifecycle events:
