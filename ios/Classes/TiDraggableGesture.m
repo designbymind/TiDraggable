@@ -156,6 +156,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 - (void)animateToDetent:(NSDictionary *)detent
                velocity:(CGFloat)velocity
                animated:(BOOL)animated
+         updateProgress:(BOOL)updateProgress
           releaseAction:(NSString *)releaseAction
              properties:(NSMutableDictionary *)properties;
 - (void)updateFollowersForSheetTop:(CGFloat)sheetTop persistLayout:(BOOL)persistLayout;
@@ -212,7 +213,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         if (detent != nil)
         {
             _didApplyInitialDetent = YES;
-            [self animateToDetent:detent velocity:0.0f animated:NO releaseAction:@"initial" properties:nil];
+            [self animateToDetent:detent velocity:0.0f animated:NO updateProgress:NO releaseAction:@"initial" properties:nil];
         }
     }
 
@@ -381,7 +382,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     }
 
     BOOL animated = [TiUtils boolValue:[options objectForKey:@"animated"] def:YES];
-    [self animateToDetent:detent velocity:0.0f animated:animated releaseAction:@"programmatic" properties:nil];
+    BOOL updateProgress = [TiUtils boolValue:[options objectForKey:@"updateProgress"] def:NO];
+    [self animateToDetent:detent velocity:0.0f animated:animated updateProgress:updateProgress releaseAction:@"programmatic" properties:nil];
 }
 
 // CREDIT: https://github.com/mikefogg/TiDraggable/commit/bebd0ddd2836faa08e86f08619b7503977ecc5b0
@@ -1376,7 +1378,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     [properties setObject:[NSNumber numberWithBool:YES] forKey:@"nativeReleaseHandled"];
     [properties setObject:releaseAction forKey:@"releaseAction"];
     [properties setObject:[targetDetent objectForKey:@"name"] forKey:@"detent"];
-    [self animateToDetent:targetDetent velocity:velocity.y animated:YES releaseAction:releaseAction properties:properties];
+    [self animateToDetent:targetDetent velocity:velocity.y animated:YES updateProgress:YES releaseAction:releaseAction properties:properties];
 
     return YES;
 }
@@ -1384,6 +1386,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 - (void)animateToDetent:(NSDictionary *)detent
                velocity:(CGFloat)velocity
                animated:(BOOL)animated
+         updateProgress:(BOOL)updateProgress
           releaseAction:(NSString *)releaseAction
              properties:(NSMutableDictionary *)properties
 {
@@ -1395,7 +1398,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     [self stopDetentProgressTracking];
     _detentProgressTrackingGeneration++;
     NSUInteger progressTrackingGeneration = _detentProgressTrackingGeneration;
-    BOOL shouldTrackProgress = animated && properties != nil;
+    BOOL shouldTrackProgress = updateProgress;
 
     UIView *view = self.proxy.view;
     CGFloat targetTop = [[detent objectForKey:@"top"] floatValue];
@@ -1463,7 +1466,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         return;
     }
 
-    if (shouldTrackProgress)
+    if (animated && shouldTrackProgress)
     {
         [self startDetentProgressTracking];
     }

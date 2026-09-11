@@ -100,7 +100,7 @@ If `axis` is omitted, the view can move freely on both axes.
 
 ## Native Bottom-Sheet Handoff (iOS)
 
-Version 4.5.0 can coordinate a vertical draggable view with a descendant `Ti.UI.TableView`, `Ti.UI.ListView`, or `Ti.UI.ScrollView`. The inner scroll view scrolls while the sheet is expanded. A downward gesture first returns the inner content to its adjusted top offset, then transfers the same gesture to the draggable sheet without waiting for JavaScript.
+Version 4.5.1 can coordinate a vertical draggable view with a descendant `Ti.UI.TableView`, `Ti.UI.ListView`, or `Ti.UI.ScrollView`. The inner scroll view scrolls while the sheet is expanded. A downward gesture first returns the inner content to its adjusted top offset, then transfers the same gesture to the draggable sheet without waiting for JavaScript.
 
 ```javascript
 var tableView = Ti.UI.createTableView({
@@ -171,6 +171,7 @@ Move to a detent programmatically:
 ```javascript
 sheet.draggable.setDetent('middle');
 sheet.draggable.setDetent('expanded', { animated: false });
+sheet.draggable.setDetent('expanded', { animated: true, updateProgress: true });
 ```
 
 ### Detent Progress
@@ -187,7 +188,15 @@ sheet.addEventListener('detentprogress', function (event) {
 
 For each range, `progress` is clamped from `0` at `from` to `1` at `to`. It returns from `1` to `0` when the sheet moves in the opposite direction. The event also includes `id`, `from`, `to`, `fromTop`, `toTop`, `top`, and `interactive`.
 
-Progress starts with the user's drag and continues from the sheet's visible presentation position during the native release animation. The destination is finalized at exactly `0` or `1`. `interactive` is `true` while the finger is moving the sheet and `false` while the native animation is settling it. Programmatic `setDetent()` animations and initial detent placement do not emit `detentprogress` values.
+Progress starts with the user's drag and continues from the sheet's visible presentation position during the native release animation. The destination is finalized at exactly `0` or `1`. `interactive` is `true` while the finger is moving the sheet and `false` while the native animation is settling it.
+
+Programmatic progress is opt-in through `setDetent()` options:
+
+- `updateProgress` (`Boolean`, default `false`) — Emits `detentprogress` while moving to the requested detent.
+- With `animated: true`, progress follows the visible native animation and finishes at the exact destination value.
+- With `animated: false`, one exact destination update is emitted.
+
+Initial detent placement does not emit progress. Calling `setDetent()` without `updateProgress: true` retains the existing behavior and emits no programmatic progress.
 
 ### Scroll Handoff
 
