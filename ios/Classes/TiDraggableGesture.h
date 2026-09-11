@@ -52,6 +52,8 @@
     BOOL _didApplyInitialDetent;
     NSMutableSet *_passThroughFollowerViews;
     NSMutableDictionary *_lastDetentProgressValues;
+    CADisplayLink *_detentProgressDisplayLink;
+    NSUInteger _detentProgressTrackingGeneration;
 }
 
 - (id)initWithProxy:(TiViewProxy*)proxy andOptions:(NSDictionary*)options;

@@ -271,7 +271,7 @@ sheet.addEventListener('detentchange', function (event) {
 	Ti.API.info('Settled at detent: ' + event.detent);
 });
 sheet.addEventListener('detentprogress', function (event) {
-	Ti.API.info('Interactive progress ' + event.id + ': ' + event.progress.toFixed(3));
+	Ti.API.info('Detent progress ' + event.id + ': ' + event.progress.toFixed(3) + ' (interactive: ' + event.interactive + ')');
 });
 sheet.addEventListener('Dismiss', function () {
 	Ti.API.info('Dismiss policy reached its target detent');

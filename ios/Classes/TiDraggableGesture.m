@@ -161,7 +161,10 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 - (void)updateFollowersForSheetTop:(CGFloat)sheetTop persistLayout:(BOOL)persistLayout;
 - (void)cancelFollowerAnimations;
 - (CGFloat)topForDetentReference:(id)reference found:(BOOL *)found;
-- (void)emitDetentProgressForSheetTop:(CGFloat)sheetTop;
+- (void)emitDetentProgressForSheetTop:(CGFloat)sheetTop interactive:(BOOL)interactive;
+- (void)startDetentProgressTracking;
+- (void)stopDetentProgressTracking;
+- (void)updateDetentProgressFromDisplayLink:(CADisplayLink *)displayLink;
 - (void)setConfigValue:(id)value forKeyPath:(NSString *)keyPath;
 
 @end
@@ -221,6 +224,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
 - (void)dealloc
 {
+    [self stopDetentProgressTracking];
+
     for (UIView *view in _passThroughFollowerViews)
     {
         TiDraggableSetFollowerPassThroughTouches(view, NO);
@@ -457,6 +462,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
     if ([panRecognizer state] == UIGestureRecognizerStateBegan)
     {
+        [self stopDetentProgressTracking];
+        _detentProgressTrackingGeneration++;
         [_lastDetentProgressValues removeAllObjects];
         touchStart = self.proxy.view.frame.origin;
         touchStartCenter = self.proxy.view.center;
@@ -576,7 +583,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         if ([panRecognizer state] == UIGestureRecognizerStateChanged &&
             fabs(sheetTop - sheetTopBeforeUpdate) > 0.001f)
         {
-            [self emitDetentProgressForSheetTop:sheetTop];
+            [self emitDetentProgressForSheetTop:sheetTop interactive:YES];
         }
     }
 
@@ -604,7 +611,11 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         [panRecognizer state] == UIGestureRecognizerStateCancelled ||
         [panRecognizer state] == UIGestureRecognizerStateFailed)
     {
-        [_lastDetentProgressValues removeAllObjects];
+        if ([panRecognizer state] != UIGestureRecognizerStateEnded)
+        {
+            [_lastDetentProgressValues removeAllObjects];
+        }
+
         objc_setAssociatedObject(self, kTiDraggableLockedAxisKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
@@ -1129,7 +1140,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     return [[detent objectForKey:@"top"] floatValue];
 }
 
-- (void)emitDetentProgressForSheetTop:(CGFloat)sheetTop
+- (void)emitDetentProgressForSheetTop:(CGFloat)sheetTop interactive:(BOOL)interactive
 {
     TiViewProxy *panningProxy = self.proxy;
 
@@ -1188,7 +1199,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
                                              [NSNumber numberWithFloat:sheetTop], @"top",
                                              [NSNumber numberWithFloat:fromTop], @"fromTop",
                                              [NSNumber numberWithFloat:toTop], @"toTop",
-                                             [NSNumber numberWithBool:YES], @"interactive",
+                                             [NSNumber numberWithBool:interactive], @"interactive",
                                              nil];
 
         if (fromReference != nil)
@@ -1203,6 +1214,39 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
         [panningProxy fireEvent:@"detentprogress" withObject:properties];
         index++;
+    }
+}
+
+- (void)startDetentProgressTracking
+{
+    if (![self.proxy _hasListeners:@"detentprogress"] ||
+        ![[self valueForKey:@"progressRanges"] isKindOfClass:[NSArray class]])
+    {
+        return;
+    }
+
+    _detentProgressDisplayLink = [[CADisplayLink displayLinkWithTarget:self selector:@selector(updateDetentProgressFromDisplayLink:)] retain];
+    [_detentProgressDisplayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+- (void)stopDetentProgressTracking
+{
+    [_detentProgressDisplayLink invalidate];
+    [_detentProgressDisplayLink release];
+    _detentProgressDisplayLink = nil;
+}
+
+- (void)updateDetentProgressFromDisplayLink:(CADisplayLink *)displayLink
+{
+    if (displayLink != _detentProgressDisplayLink || ![self.proxy viewReady])
+    {
+        return;
+    }
+
+    CALayer *presentationLayer = (CALayer *)[self.proxy.view.layer presentationLayer];
+    if (presentationLayer != nil)
+    {
+        [self emitDetentProgressForSheetTop:presentationLayer.frame.origin.y interactive:NO];
     }
 }
 
@@ -1348,6 +1392,11 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         return;
     }
 
+    [self stopDetentProgressTracking];
+    _detentProgressTrackingGeneration++;
+    NSUInteger progressTrackingGeneration = _detentProgressTrackingGeneration;
+    BOOL shouldTrackProgress = animated && properties != nil;
+
     UIView *view = self.proxy.view;
     CGFloat targetTop = [[detent objectForKey:@"top"] floatValue];
     CGPoint targetCenter = view.center;
@@ -1374,6 +1423,19 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     };
 
     void (^completion)(BOOL) = ^(BOOL finished) {
+        if (shouldTrackProgress && progressTrackingGeneration == _detentProgressTrackingGeneration)
+        {
+            [self stopDetentProgressTracking];
+
+            if (finished)
+            {
+                // Bypass the per-frame epsilon so every configured range receives
+                // an exact value for the final visible sheet position.
+                [_lastDetentProgressValues removeAllObjects];
+                [self emitDetentProgressForSheetTop:targetTop interactive:NO];
+            }
+        }
+
         if (!finished)
         {
             return;
@@ -1399,6 +1461,11 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         animations();
         completion(YES);
         return;
+    }
+
+    if (shouldTrackProgress)
+    {
+        [self startDetentProgressTracking];
     }
 
     [UIView animateWithDuration:duration

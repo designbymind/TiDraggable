@@ -173,7 +173,7 @@ sheet.draggable.setDetent('middle');
 sheet.draggable.setDetent('expanded', { animated: false });
 ```
 
-### Interactive Detent Progress
+### Detent Progress
 
 `progressRanges` accepts multiple named ranges. Each item requires a unique `id` plus `from` and `to` values that reference detent names or numeric sheet-top positions.
 
@@ -185,9 +185,9 @@ sheet.addEventListener('detentprogress', function (event) {
 });
 ```
 
-For each range, `progress` is clamped from `0` at `from` to `1` at `to`. It returns from `1` to `0` when the user drags in the opposite direction. The event also includes `id`, `from`, `to`, `fromTop`, `toTop`, `top`, and `interactive: true`.
+For each range, `progress` is clamped from `0` at `from` to `1` at `to`. It returns from `1` to `0` when the sheet moves in the opposite direction. The event also includes `id`, `from`, `to`, `fromTop`, `toTop`, `top`, and `interactive`.
 
-Progress is emitted only while the user's pan gesture is actively changing the sheet position. Native spring settling after release, `setDetent()` animations, and initial detent placement do not emit `detentprogress` values.
+Progress starts with the user's drag and continues from the sheet's visible presentation position during the native release animation. The destination is finalized at exactly `0` or `1`. `interactive` is `true` while the finger is moving the sheet and `false` while the native animation is settling it. Programmatic `setDetent()` animations and initial detent placement do not emit `detentprogress` values.
 
 ### Scroll Handoff
 
@@ -228,7 +228,7 @@ Size the sheet so its bottom edge meets the window bottom at the expanded detent
 The sheet emits these lifecycle events:
 
 - `handoff` — Gesture ownership changes; `owner` is `scroll` or `draggable`.
-- `detentprogress` — Interactive, clamped `0` through `1` progress for each configured progress range whose value changed.
+- `detentprogress` — Clamped `0` through `1` progress for each configured range whose value changed, including native settling after release.
 - `detentwillchange` — A native detent animation is about to begin.
 - `detentchange` — The native detent animation completed; includes `detent` and `top`.
 - `dismiss` — A `dismiss` policy release completed at its dismissal detent.
