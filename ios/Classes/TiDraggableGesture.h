@@ -51,6 +51,7 @@
     NSInteger _verticalPanOwner;
     BOOL _didApplyInitialDetent;
     NSMutableSet *_passThroughFollowerViews;
+    NSMutableDictionary *_lastDetentProgressValues;
 }
 
 - (id)initWithProxy:(TiViewProxy*)proxy andOptions:(NSDictionary*)options;

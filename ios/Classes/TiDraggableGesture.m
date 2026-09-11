@@ -161,6 +161,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 - (void)updateFollowersForSheetTop:(CGFloat)sheetTop persistLayout:(BOOL)persistLayout;
 - (void)cancelFollowerAnimations;
 - (CGFloat)topForDetentReference:(id)reference found:(BOOL *)found;
+- (void)emitDetentProgressForSheetTop:(CGFloat)sheetTop;
 - (void)setConfigValue:(id)value forKeyPath:(NSString *)keyPath;
 
 @end
@@ -172,6 +173,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     if (self = [super init])
     {
         _passThroughFollowerViews = [[NSMutableSet alloc] init];
+        _lastDetentProgressValues = [[NSMutableDictionary alloc] init];
         self.proxy = proxy;
         UIPanGestureRecognizer *panGesture = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(panDetected:)];
         self.gesture = panGesture;
@@ -226,6 +228,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
     [_passThroughFollowerViews release];
     _passThroughFollowerViews = nil;
+    [_lastDetentProgressValues release];
+    _lastDetentProgressValues = nil;
     [self setObservedScrollView:nil];
     self.gesture.delegate = nil;
     self.gesture = nil;
@@ -258,6 +262,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
     if (didUpdateConfig)
     {
+        [_lastDetentProgressValues removeAllObjects];
         [self updateGestureCoordination];
         [self correctMappedProxyPositions];
 
@@ -441,6 +446,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         [self cancelFollowerAnimations];
     }
 
+    CGFloat sheetTopBeforeUpdate = self.proxy.view.frame.origin.y;
+
     CGPoint translation = [panRecognizer translationInView:self.proxy.view];
     CGPoint newCenter = self.proxy.view.center;
     CGSize size = self.proxy.view.frame.size;
@@ -450,6 +457,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
     if ([panRecognizer state] == UIGestureRecognizerStateBegan)
     {
+        [_lastDetentProgressValues removeAllObjects];
         touchStart = self.proxy.view.frame.origin;
         touchStartCenter = self.proxy.view.center;
         _coordinatedScrollView = [self configuredScrollView];
@@ -563,6 +571,13 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         }
 
         [self updateFollowersForSheetTop:self.proxy.view.frame.origin.y persistLayout:YES];
+
+        CGFloat sheetTop = self.proxy.view.frame.origin.y;
+        if ([panRecognizer state] == UIGestureRecognizerStateChanged &&
+            fabs(sheetTop - sheetTopBeforeUpdate) > 0.001f)
+        {
+            [self emitDetentProgressForSheetTop:sheetTop];
+        }
     }
 
     [panRecognizer setTranslation:CGPointZero inView:self.proxy.view];
@@ -589,6 +604,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         [panRecognizer state] == UIGestureRecognizerStateCancelled ||
         [panRecognizer state] == UIGestureRecognizerStateFailed)
     {
+        [_lastDetentProgressValues removeAllObjects];
         objc_setAssociatedObject(self, kTiDraggableLockedAxisKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
@@ -1111,6 +1127,83 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     }
 
     return [[detent objectForKey:@"top"] floatValue];
+}
+
+- (void)emitDetentProgressForSheetTop:(CGFloat)sheetTop
+{
+    TiViewProxy *panningProxy = self.proxy;
+
+    if (![panningProxy _hasListeners:@"detentprogress"])
+    {
+        return;
+    }
+
+    id configuredRanges = [self valueForKey:@"progressRanges"];
+    if (![configuredRanges isKindOfClass:[NSArray class]])
+    {
+        return;
+    }
+
+    NSUInteger index = 0;
+    for (id configuredRange in (NSArray *)configuredRanges)
+    {
+        if (![configuredRange isKindOfClass:[NSDictionary class]])
+        {
+            index++;
+            continue;
+        }
+
+        NSDictionary *range = (NSDictionary *)configuredRange;
+        NSString *identifier = [TiUtils stringValue:[range objectForKey:@"id"]];
+        id fromReference = [range objectForKey:@"from"];
+        id toReference = [range objectForKey:@"to"];
+        BOOL foundFrom = NO;
+        BOOL foundTo = NO;
+        CGFloat fromTop = [self topForDetentReference:fromReference found:&foundFrom];
+        CGFloat toTop = [self topForDetentReference:toReference found:&foundTo];
+
+        if ([identifier length] == 0 || !foundFrom || !foundTo || fabs(toTop - fromTop) < 0.001f)
+        {
+            index++;
+            continue;
+        }
+
+        CGFloat progress = (sheetTop - fromTop) / (toTop - fromTop);
+        progress = MIN(1.0f, MAX(0.0f, progress));
+
+        NSString *stateKey = [NSString stringWithFormat:@"%lu:%@", (unsigned long)index, identifier];
+        NSNumber *lastProgress = [_lastDetentProgressValues objectForKey:stateKey];
+
+        if (lastProgress != nil && fabs(progress - [lastProgress floatValue]) < 0.0001f)
+        {
+            index++;
+            continue;
+        }
+
+        [_lastDetentProgressValues setObject:[NSNumber numberWithFloat:progress] forKey:stateKey];
+
+        NSMutableDictionary *properties = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                             identifier, @"id",
+                                             [NSNumber numberWithFloat:progress], @"progress",
+                                             [NSNumber numberWithFloat:sheetTop], @"top",
+                                             [NSNumber numberWithFloat:fromTop], @"fromTop",
+                                             [NSNumber numberWithFloat:toTop], @"toTop",
+                                             [NSNumber numberWithBool:YES], @"interactive",
+                                             nil];
+
+        if (fromReference != nil)
+        {
+            [properties setObject:fromReference forKey:@"from"];
+        }
+
+        if (toReference != nil)
+        {
+            [properties setObject:toReference forKey:@"to"];
+        }
+
+        [panningProxy fireEvent:@"detentprogress" withObject:properties];
+        index++;
+    }
 }
 
 - (CGFloat)topHandoffPosition

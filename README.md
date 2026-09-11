@@ -100,7 +100,7 @@ If `axis` is omitted, the view can move freely on both axes.
 
 ## Native Bottom-Sheet Handoff (iOS)
 
-Version 4.4.0 can coordinate a vertical draggable view with a descendant `Ti.UI.TableView`, `Ti.UI.ListView`, or `Ti.UI.ScrollView`. The inner scroll view scrolls while the sheet is expanded. A downward gesture first returns the inner content to its adjusted top offset, then transfers the same gesture to the draggable sheet without waiting for JavaScript.
+Version 4.5.0 can coordinate a vertical draggable view with a descendant `Ti.UI.TableView`, `Ti.UI.ListView`, or `Ti.UI.ScrollView`. The inner scroll view scrolls while the sheet is expanded. A downward gesture first returns the inner content to its adjusted top offset, then transfers the same gesture to the draggable sheet without waiting for JavaScript.
 
 ```javascript
 var tableView = Ti.UI.createTableView({
@@ -131,6 +131,10 @@ var sheet = Draggable.createView({
       collapsed: 700
     },
     initialDetent: 'collapsed',
+    progressRanges: [
+      { id: 'collapsedToMiddle', from: 'collapsed', to: 'middle' },
+      { id: 'middleToExpanded', from: 'middle', to: 'expanded' }
+    ],
     scrollHandoff: {
       view: tableView,
       atTopBehavior: 'drag'
@@ -151,7 +155,7 @@ window.add(mapButtons); // Followers should be siblings of the sheet.
 window.add(sheet);
 ```
 
-All per-frame scrolling, dragging, snapping, follower positioning, and fading occurs in UIKit. JavaScript receives lifecycle events only.
+All scrolling, dragging, snapping, follower positioning, and fading occurs in UIKit. JavaScript can optionally observe interactive progress without driving the native motion.
 
 ### Detents
 
@@ -168,6 +172,22 @@ Move to a detent programmatically:
 sheet.draggable.setDetent('middle');
 sheet.draggable.setDetent('expanded', { animated: false });
 ```
+
+### Interactive Detent Progress
+
+`progressRanges` accepts multiple named ranges. Each item requires a unique `id` plus `from` and `to` values that reference detent names or numeric sheet-top positions.
+
+```javascript
+sheet.addEventListener('detentprogress', function (event) {
+  if (event.id === 'middleToExpanded') {
+    detailsView.opacity = event.progress;
+  }
+});
+```
+
+For each range, `progress` is clamped from `0` at `from` to `1` at `to`. It returns from `1` to `0` when the user drags in the opposite direction. The event also includes `id`, `from`, `to`, `fromTop`, `toTop`, `top`, and `interactive: true`.
+
+Progress is emitted only while the user's pan gesture is actively changing the sheet position. Native spring settling after release, `setDetent()` animations, and initial detent placement do not emit `detentprogress` values.
 
 ### Scroll Handoff
 
@@ -208,6 +228,7 @@ Size the sheet so its bottom edge meets the window bottom at the expanded detent
 The sheet emits these lifecycle events:
 
 - `handoff` — Gesture ownership changes; `owner` is `scroll` or `draggable`.
+- `detentprogress` — Interactive, clamped `0` through `1` progress for each configured progress range whose value changed.
 - `detentwillchange` — A native detent animation is about to begin.
 - `detentchange` — The native detent animation completed; includes `detent` and `top`.
 - `dismiss` — A `dismiss` policy release completed at its dismissal detent.

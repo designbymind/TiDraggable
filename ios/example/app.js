@@ -129,6 +129,10 @@ var sheet = Draggable.createView({
 		},
 		initialDetent: 'collapsed',
 		detentVelocityThreshold: 650,
+		progressRanges: [
+			{ id: 'collapsedToMiddle', from: 'collapsed', to: 'middle' },
+			{ id: 'middleToExpanded', from: 'middle', to: 'expanded' }
+		],
 		scrollHandoff: {
 			view: tableView,
 			atTopBehavior: 'drag',
@@ -265,6 +269,9 @@ sheet.addEventListener('detentwillchange', function (event) {
 });
 sheet.addEventListener('detentchange', function (event) {
 	Ti.API.info('Settled at detent: ' + event.detent);
+});
+sheet.addEventListener('detentprogress', function (event) {
+	Ti.API.info('Interactive progress ' + event.id + ': ' + event.progress.toFixed(3));
 });
 sheet.addEventListener('Dismiss', function () {
 	Ti.API.info('Dismiss policy reached its target detent');
