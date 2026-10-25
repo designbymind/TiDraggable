@@ -128,6 +128,7 @@ var sheet = Draggable.createView({
 			collapsed: collapsedTop
 		},
 		initialDetent: 'collapsed',
+		collapsedBounce: { enabled: true },
 		detentVelocityThreshold: 650,
 		progressRanges: [
 			{ id: 'collapsedToMiddle', from: 'collapsed', to: 'middle' },
@@ -136,6 +137,8 @@ var sheet = Draggable.createView({
 		scrollHandoff: {
 			view: tableView,
 			atTopBehavior: 'drag',
+			suppressScrollMomentum: true,
+			scrollEnabledByDetent: { collapsed: false, middle: true, expanded: true },
 			dismissThreshold: 120,
 			dismissDetent: 'collapsed'
 		},
@@ -273,7 +276,7 @@ sheet.addEventListener('detentchange', function (event) {
 sheet.addEventListener('detentprogress', function (event) {
 	Ti.API.info('Detent progress ' + event.id + ': ' + event.progress.toFixed(3) + ' (interactive: ' + event.interactive + ')');
 });
-sheet.addEventListener('Dismiss', function () {
+sheet.addEventListener('dismiss', function () {
 	Ti.API.info('Dismiss policy reached its target detent');
 });
 

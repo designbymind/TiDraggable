@@ -38,6 +38,7 @@
 #import <objc/message.h>
 #import "TiViewProxy+ViewProxyExtended.h"
 #import "TiDraggableGesture.h"
+#import "TiDraggableRubberBand.h"
 
 static const void *kTiDraggableLockedAxisKey = &kTiDraggableLockedAxisKey;
 static const void *kTiDraggableFollowerInteractionKey = &kTiDraggableFollowerInteractionKey;
@@ -140,6 +141,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 - (void)persistCurrentViewPositionUpdatingX:(BOOL)updateX updatingY:(BOOL)updateY;
 - (void)updateGestureCoordination;
 - (void)setObservedScrollView:(UIScrollView *)scrollView;
+- (void)updateDetentScrollPolicy;
+- (void)restoreScrollEnabled;
 - (UIScrollView *)configuredScrollView;
 - (UIScrollView *)firstScrollViewInView:(UIView *)view;
 - (BOOL)gestureBeganInsideScrollView:(UIScrollView *)scrollView recognizer:(UIPanGestureRecognizer *)panRecognizer;
@@ -147,6 +150,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 - (void)setVerticalPanOwner:(TiDraggableVerticalPanOwner)owner;
 - (CGFloat)topContentOffsetForScrollView:(UIScrollView *)scrollView;
 - (void)pinConfiguredScrollViewToTop;
+- (NSDictionary *)collapsedBounceOptions;
+- (void)suppressConfiguredScrollViewMomentum;
 - (NSArray *)sortedDetents;
 - (NSDictionary *)detentNamed:(NSString *)name;
 - (CGFloat)topHandoffPosition;
@@ -237,6 +242,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     [_lastDetentProgressValues release];
     _lastDetentProgressValues = nil;
     [self setObservedScrollView:nil];
+    [_scrollPolicyDetentName release];
+    [_scrollPolicyTargetDetentName release];
     self.gesture.delegate = nil;
     self.gesture = nil;
     _coordinatedScrollView = nil;
@@ -246,6 +253,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
 - (void)setConfig:(id)args
 {
+    _isSuppressingScrollMomentum = NO;
     BOOL didUpdateConfig = NO;
 
     if ([args isKindOfClass:[NSDictionary class]])
@@ -350,6 +358,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 - (void)setDetent:(id)args
 {
     ENSURE_UI_THREAD_1_ARG(args);
+    _isSuppressingScrollMomentum = NO;
 
     NSString *name = nil;
     NSDictionary *options = nil;
@@ -389,6 +398,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 // CREDIT: https://github.com/mikefogg/TiDraggable/commit/bebd0ddd2836faa08e86f08619b7503977ecc5b0
 - (void)removeGesture:(id)args
 {
+    _isSuppressingScrollMomentum = NO;
+    [self restoreScrollEnabled];
     BOOL gestureIsAttached = [self.proxy.view.gestureRecognizers containsObject:self.gesture];
     
     if (gestureIsAttached && [self.proxy viewReady])
@@ -446,6 +457,10 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         hasMaxTop = YES;
     }
 
+    NSDictionary *collapsedBounce = [detents count] > 0 ? [self collapsedBounceOptions] : nil;
+    CGFloat bounceLimit = MAX(1.0f, [TiUtils floatValue:[collapsedBounce objectForKey:@"maxDistance"] def:48.0f]);
+    CGFloat bounceResistance = MIN(1.0f, MAX(0.01f, [TiUtils floatValue:[collapsedBounce objectForKey:@"resistance"] def:0.35f]));
+
     if (cancelAnimations && [[self.proxy.view.layer animationKeys] count] > 0)
     {
         [self.proxy.view setFrame:[[self.proxy.view.layer presentationLayer] frame]];
@@ -464,11 +479,17 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
     if ([panRecognizer state] == UIGestureRecognizerStateBegan)
     {
+        _isSuppressingScrollMomentum = NO;
+        [_scrollPolicyTargetDetentName release];
+        _scrollPolicyTargetDetentName = nil;
+        [self updateDetentScrollPolicy];
         [self stopDetentProgressTracking];
         _detentProgressTrackingGeneration++;
         [_lastDetentProgressValues removeAllObjects];
         touchStart = self.proxy.view.frame.origin;
         touchStartCenter = self.proxy.view.center;
+        _collapsedPullDistance = collapsedBounce != nil
+            ? TiDraggableRubberBandPull(MAX(0.0f, touchStart.y - maxTop), bounceLimit, bounceResistance) : 0.0f;
         _coordinatedScrollView = [self configuredScrollView];
         _gestureBeganInCoordinatedScrollView = [self gestureBeganInsideScrollView:_coordinatedScrollView recognizer:panRecognizer];
         _verticalPanOwner = TiDraggableVerticalPanOwnerNone;
@@ -532,7 +553,21 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
             newCenter.x = minLeft + size.width / 2;
         }
 
-        if (hasMaxTop && newCenter.y - size.height / 2 > maxTop)
+        BOOL appliesCollapsedBounce = collapsedBounce != nil && fabs(tmpTranslationY) > 0.0f;
+        if (appliesCollapsedBounce &&
+            (_collapsedPullDistance > 0.0f || newCenter.y - size.height / 2 > maxTop))
+        {
+            CGFloat rawOverflow = _collapsedPullDistance > 0.0f
+                ? _collapsedPullDistance + tmpTranslationY
+                : newCenter.y - size.height / 2 - maxTop;
+            _collapsedPullDistance = MAX(0.0f, rawOverflow);
+            CGFloat displayedOverflow = rawOverflow > 0.0f
+                ? TiDraggableRubberBandOffset(rawOverflow, bounceLimit, bounceResistance) : rawOverflow;
+            newCenter.y = MAX(minTop, maxTop + displayedOverflow) + size.height / 2;
+            tmpTranslationY = newCenter.y - self.proxy.view.center.y;
+        }
+        else if (hasMaxTop && newCenter.y - size.height / 2 > maxTop &&
+                 !(collapsedBounce != nil && _collapsedPullDistance > 0.0f))
         {
             newCenter.y = maxTop + size.height / 2;
         }
@@ -652,7 +687,9 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
                                                                       properties:tiProps];
     }
 
-    if (gestureState == UIGestureRecognizerStateEnded && !nativeReleaseHandled)
+    BOOL cancelledCollapsedPull = (gestureState == UIGestureRecognizerStateCancelled ||
+        gestureState == UIGestureRecognizerStateFailed) && _collapsedPullDistance > 0.0f;
+    if ((gestureState == UIGestureRecognizerStateEnded || cancelledCollapsedPull) && !nativeReleaseHandled)
     {
         nativeReleaseHandled = [self startNativeVerticalDetentReleaseForRecognizer:panRecognizer
                                                                          lockedAxis:lockedAxis
@@ -674,9 +711,10 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     {
         [panningProxy fireEvent:@"move" withObject:tiProps];
     }
-    else if([panRecognizer state] == UIGestureRecognizerStateEnded || [panRecognizer state] == UIGestureRecognizerStateCancelled)
+    else if([panRecognizer state] == UIGestureRecognizerStateEnded ||
+            [panRecognizer state] == UIGestureRecognizerStateCancelled || cancelledCollapsedPull)
     {
-        [panningProxy fireEvent:([panRecognizer state] == UIGestureRecognizerStateCancelled ? @"cancel" : @"end")
+        [panningProxy fireEvent:([panRecognizer state] == UIGestureRecognizerStateEnded ? @"end" : @"cancel")
                      withObject:tiProps];
 
         if (nativeReleaseHandled && [panningProxy _hasListeners:@"release"])
@@ -687,6 +725,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         _coordinatedScrollView = nil;
         _gestureBeganInCoordinatedScrollView = NO;
         _verticalPanOwner = TiDraggableVerticalPanOwnerNone;
+        _collapsedPullDistance = 0.0f;
     }
 }
 
@@ -840,6 +879,7 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     panGesture.delegate = enabled ? self : nil;
     panGesture.cancelsTouchesInView = !enabled;
     [self setObservedScrollView:enabled ? [self configuredScrollView] : nil];
+    [self updateDetentScrollPolicy];
 
     if (!enabled)
     {
@@ -849,12 +889,86 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     }
 }
 
+- (void)restoreScrollEnabled
+{
+    _scrollingDisabledForDetent = NO;
+    if (_managesScrollEnabled)
+    {
+        _observedScrollView.scrollEnabled = _originalScrollEnabled;
+        _managesScrollEnabled = NO;
+    }
+}
+
+- (void)updateDetentScrollPolicy
+{
+    NSDictionary *scrollHandoff = [self valueForKey:@"scrollHandoff"];
+    NSDictionary *policy = [scrollHandoff isKindOfClass:[NSDictionary class]]
+        ? [scrollHandoff objectForKey:@"scrollEnabledByDetent"] : nil;
+    NSArray *detents = [self sortedDetents];
+
+    if (_observedScrollView == nil || ![self.proxy viewReady] ||
+        ![policy isKindOfClass:[NSDictionary class]] || [policy count] == 0 || [detents count] == 0)
+    {
+        [self restoreScrollEnabled];
+        return;
+    }
+
+    NSDictionary *currentDetent = [self detentNamed:_scrollPolicyDetentName];
+    if (currentDetent == nil)
+    {
+        CGFloat shortestDistance = CGFLOAT_MAX;
+        CGFloat top = self.proxy.view.frame.origin.y;
+        for (NSDictionary *detent in detents)
+        {
+            CGFloat distance = fabs([[detent objectForKey:@"top"] floatValue] - top);
+            if (distance < shortestDistance)
+            {
+                currentDetent = detent;
+                shortestDistance = distance;
+            }
+        }
+        [_scrollPolicyDetentName release];
+        _scrollPolicyDetentName = [[currentDetent objectForKey:@"name"] copy];
+    }
+
+    if (!_managesScrollEnabled)
+    {
+        _originalScrollEnabled = _observedScrollView.scrollEnabled;
+        _managesScrollEnabled = YES;
+    }
+
+    id currentValue = [policy objectForKey:[currentDetent objectForKey:@"name"]];
+    id targetValue = _scrollPolicyTargetDetentName != nil
+        ? [policy objectForKey:_scrollPolicyTargetDetentName] : nil;
+    BOOL enabled = [TiUtils boolValue:currentValue def:_originalScrollEnabled];
+
+    // Lock before moving into a disabled detent, and keep a disabled origin locked
+    // until the destination settles. Re-enabling mid-touch can leak flick velocity.
+    if (targetValue != nil && ![TiUtils boolValue:targetValue def:YES])
+    {
+        enabled = NO;
+    }
+
+    _scrollingDisabledForDetent = !enabled;
+    if (_observedScrollView.scrollEnabled != enabled)
+    {
+        _observedScrollView.scrollEnabled = enabled;
+    }
+    if (_scrollingDisabledForDetent)
+    {
+        [self pinConfiguredScrollViewToTop];
+    }
+}
+
 - (void)setObservedScrollView:(UIScrollView *)scrollView
 {
     if (_observedScrollView == scrollView)
     {
         return;
     }
+
+    _isSuppressingScrollMomentum = NO;
+    [self restoreScrollEnabled];
 
     if (_observedScrollView != nil)
     {
@@ -885,7 +999,8 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         UIGestureRecognizerState state = self.gesture.state;
         BOOL gestureIsActive = state == UIGestureRecognizerStateBegan || state == UIGestureRecognizerStateChanged;
 
-        if (gestureIsActive && _verticalPanOwner == TiDraggableVerticalPanOwnerSheet && !_isPinningScrollView)
+        if (((gestureIsActive && _verticalPanOwner == TiDraggableVerticalPanOwnerSheet) ||
+             _isSuppressingScrollMomentum || _scrollingDisabledForDetent) && !_isPinningScrollView)
         {
             [self pinConfiguredScrollViewToTop];
         }
@@ -974,10 +1089,70 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     _isPinningScrollView = NO;
 }
 
+- (NSDictionary *)collapsedBounceOptions
+{
+    id options = [self valueForKey:@"collapsedBounce"];
+    id handoff = [self valueForKey:@"scrollHandoff"];
+    BOOL dismisses = [handoff isKindOfClass:[NSDictionary class]] &&
+        [[TiUtils stringValue:[handoff objectForKey:@"atTopBehavior"]] isEqualToString:@"dismiss"];
+    if (dismisses || ![options isKindOfClass:[NSDictionary class]] ||
+        ![TiUtils boolValue:[options objectForKey:@"enabled"] def:NO])
+    {
+        return nil;
+    }
+    return options;
+}
+
+- (void)suppressConfiguredScrollViewMomentum
+{
+    UIScrollView *scrollView = _coordinatedScrollView ?: _observedScrollView;
+
+    if (scrollView == nil)
+    {
+        return;
+    }
+
+    UIPanGestureRecognizer *scrollPanGesture = scrollView.panGestureRecognizer;
+    BOOL shouldRestorePanGesture = scrollView.scrollEnabled && scrollPanGesture.enabled;
+    _isSuppressingScrollMomentum = YES;
+    NSUInteger gestureGeneration = _detentProgressTrackingGeneration;
+
+    if (shouldRestorePanGesture)
+    {
+        // Cancel the scroll view's copy of the shared flick before it can begin decelerating.
+        scrollPanGesture.enabled = NO;
+    }
+
+    [self pinConfiguredScrollViewToTop];
+
+    if (!shouldRestorePanGesture)
+    {
+        return;
+    }
+
+    // The adjusted top changes as the sheet passes beneath navigation/status bars.
+    // Never restore a top offset captured before the detent animation started.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        scrollPanGesture.enabled = YES;
+        if (_isSuppressingScrollMomentum && _observedScrollView == scrollView &&
+            gestureGeneration + 1 == _detentProgressTrackingGeneration)
+        {
+            [self pinConfiguredScrollViewToTop];
+        }
+    });
+}
+
 - (BOOL)shouldMoveSheetForVerticalTranslation:(CGFloat)translationY
 {
     if (!_gestureBeganInCoordinatedScrollView || _coordinatedScrollView == nil)
     {
+        return YES;
+    }
+
+    if (_scrollingDisabledForDetent)
+    {
+        [self pinConfiguredScrollViewToTop];
+        [self setVerticalPanOwner:TiDraggableVerticalPanOwnerSheet];
         return YES;
     }
 
@@ -1245,6 +1420,11 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         return;
     }
 
+    if (_isSuppressingScrollMomentum || _scrollingDisabledForDetent)
+    {
+        [self pinConfiguredScrollViewToTop];
+    }
+
     CALayer *presentationLayer = (CALayer *)[self.proxy.view.layer presentationLayer];
     if (presentationLayer != nil)
     {
@@ -1324,7 +1504,20 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         ((dismissThreshold > 0.0f && distance.y >= dismissThreshold) ||
          (velocityThreshold > 0.0f && velocity.y >= velocityThreshold));
 
-    if (shouldDismiss)
+    CGFloat collapsedTop = [[[detents lastObject] objectForKey:@"top"] floatValue];
+    BOOL shouldBounce = [self collapsedBounceOptions] != nil && currentTop > collapsedTop + 0.01f;
+    if (shouldBounce)
+    {
+        targetDetent = [detents lastObject];
+        releaseAction = @"bounce";
+        // The finger's raw outward velocity must not launch the sheet further down.
+        velocity.y = 0.0f;
+        if (_gestureBeganInCoordinatedScrollView)
+        {
+            [self suppressConfiguredScrollViewMomentum];
+        }
+    }
+    else if (shouldDismiss)
     {
         targetDetent = [self detentNamed:[TiUtils stringValue:[scrollHandoff objectForKey:@"dismissDetent"]]];
         targetDetent = targetDetent ?: [detents lastObject];
@@ -1375,6 +1568,18 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         return NO;
     }
 
+    BOOL suppressScrollMomentum = [TiUtils boolValue:[scrollHandoff objectForKey:@"suppressScrollMomentum"] def:NO];
+    CGFloat targetTop = [[targetDetent objectForKey:@"top"] floatValue];
+    BOOL movesToHigherDetent = targetTop < touchStart.y - 1.0f;
+
+    if (suppressScrollMomentum &&
+        _gestureBeganInCoordinatedScrollView &&
+        _verticalPanOwner == TiDraggableVerticalPanOwnerSheet &&
+        movesToHigherDetent)
+    {
+        [self suppressConfiguredScrollViewMomentum];
+    }
+
     [properties setObject:[NSNumber numberWithBool:YES] forKey:@"nativeReleaseHandled"];
     [properties setObject:releaseAction forKey:@"releaseAction"];
     [properties setObject:[targetDetent objectForKey:@"name"] forKey:@"detent"];
@@ -1395,6 +1600,10 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
         return;
     }
 
+    [_scrollPolicyTargetDetentName release];
+    _scrollPolicyTargetDetentName = [[detent objectForKey:@"name"] copy];
+    [self updateDetentScrollPolicy];
+
     [self stopDetentProgressTracking];
     _detentProgressTrackingGeneration++;
     NSUInteger progressTrackingGeneration = _detentProgressTrackingGeneration;
@@ -1409,6 +1618,12 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
     initialSpringVelocity = MIN(20.0f, MAX(-20.0f, initialSpringVelocity));
     NSTimeInterval duration = MAX(0.05, [TiUtils doubleValue:[self valueForKey:@"detentDuration"] def:0.42]);
     CGFloat damping = MIN(1.0f, MAX(0.01f, [TiUtils floatValue:[self valueForKey:@"detentDamping"] def:0.86f]));
+    if ([releaseAction isEqualToString:@"bounce"])
+    {
+        NSDictionary *bounceOptions = [self collapsedBounceOptions];
+        duration = MAX(0.05, [TiUtils doubleValue:[bounceOptions objectForKey:@"duration"] def:0.32]);
+        damping = MIN(1.0f, MAX(0.01f, [TiUtils floatValue:[bounceOptions objectForKey:@"damping"] def:0.8f]));
+    }
     NSMutableDictionary *eventProperties = properties != nil ? [[properties mutableCopy] autorelease] : [NSMutableDictionary dictionary];
 
     [eventProperties setObject:[detent objectForKey:@"name"] forKey:@"detent"];
@@ -1422,6 +1637,11 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
     void (^animations)(void) = ^{
         view.center = targetCenter;
+        if (_isSuppressingScrollMomentum || _scrollingDisabledForDetent)
+        {
+            [view layoutIfNeeded];
+            [self pinConfiguredScrollViewToTop];
+        }
         [self updateFollowersForSheetTop:targetTop persistLayout:NO];
     };
 
@@ -1441,10 +1661,32 @@ typedef NS_ENUM(NSInteger, TiDraggableVerticalPanOwner) {
 
         if (!finished)
         {
+            if (progressTrackingGeneration == _detentProgressTrackingGeneration)
+            {
+                _isSuppressingScrollMomentum = NO;
+                [_scrollPolicyTargetDetentName release];
+                _scrollPolicyTargetDetentName = nil;
+                [self updateDetentScrollPolicy];
+            }
             return;
         }
 
         [self persistCurrentViewPositionUpdatingX:NO updatingY:YES];
+        if (progressTrackingGeneration == _detentProgressTrackingGeneration)
+        {
+            [_scrollPolicyDetentName release];
+            _scrollPolicyDetentName = [[detent objectForKey:@"name"] copy];
+            [_scrollPolicyTargetDetentName release];
+            _scrollPolicyTargetDetentName = nil;
+            [view layoutIfNeeded];
+            [self updateDetentScrollPolicy];
+        }
+        if (_isSuppressingScrollMomentum && progressTrackingGeneration == _detentProgressTrackingGeneration)
+        {
+            [view layoutIfNeeded];
+            [self pinConfiguredScrollViewToTop];
+            _isSuppressingScrollMomentum = NO;
+        }
         [self updateFollowersForSheetTop:targetTop persistLayout:YES];
         [eventProperties setObject:[TiUtils pointToDictionary:view.center] forKey:@"center"];
 

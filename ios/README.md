@@ -6,11 +6,13 @@ An enhanced fork of the original [TiDraggable](https://github.com/pec1985/TiDrag
 
 In your `tiapp.xml` file add the following to the `modules` node:
 
-	<module version="4.5.1">ti.draggable</module>
+	<module version="4.6.0">ti.draggable</module>
 
 ## Usage
 
-See the [root README](../README.md) for the 4.5.1 bottom-sheet detents, programmatic detent progress, native scroll handoff, and follower-view APIs.
+Version 4.6.0 adds opt-in scroll-momentum suppression, per-detent scrolling policies, and collapsed pull resistance with native spring-back. See the [root README](../README.md) for the complete configuration, existing detent progress and follower-view APIs, and a runnable bottom-sheet example.
+
+The new options preserve existing behavior when omitted. This iOS package requires Titanium SDK 13.2.0.GA or newer.
 
 ```javascript
 var Draggable = require('ti.draggable'),

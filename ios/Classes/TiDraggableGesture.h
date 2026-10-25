@@ -44,10 +44,17 @@
     CGPoint touchStart;
     CGPoint touchStartCenter;
     CGPoint touchEnd;
+    CGFloat _collapsedPullDistance;
     UIScrollView *_coordinatedScrollView;
     UIScrollView *_observedScrollView;
     BOOL _gestureBeganInCoordinatedScrollView;
     BOOL _isPinningScrollView;
+    BOOL _isSuppressingScrollMomentum;
+    BOOL _managesScrollEnabled;
+    BOOL _originalScrollEnabled;
+    BOOL _scrollingDisabledForDetent;
+    NSString *_scrollPolicyDetentName;
+    NSString *_scrollPolicyTargetDetentName;
     NSInteger _verticalPanOwner;
     BOOL _didApplyInitialDetent;
     NSMutableSet *_passThroughFollowerViews;

@@ -1,4 +1,4 @@
-version: 4.5.1
+version: 4.6.0
 apiversion: 2
 architectures: arm64 x86_64
 description: Ti.Draggable

@@ -2,6 +2,21 @@
 
 An enhanced fork of the original [TiDraggable](https://github.com/pec1985/TiDraggable) module by [Pedro](http://twitter.com/pecdev) [Enrique](https://github.com/pec1985), allows for simple creation of "draggable" views.
 
+## New in iOS 4.6.0
+
+- Opt-in `scrollHandoff.suppressScrollMomentum` prevents an upward sheet flick from carrying residual momentum into the inner table. The first row retains its navigation-bar and safe-area positioning as the sheet expands.
+- `scrollHandoff.scrollEnabledByDetent` controls scrolling for individual detents, including keeping collapsed content at its adjusted top throughout the transition to the next detent.
+- Opt-in `collapsedBounce` adds progressively stronger pull resistance below the collapsed boundary and a native spring-back on release or cancellation. It is ignored while the dismiss policy is selected.
+- The existing detents, follower views, axis locking, and interactive/programmatic detent progress APIs remain available. The new options are disabled or unset by default.
+
+Download the ZIP from the [iOS v4.6.0 release](https://github.com/designbymind/TiDraggable/releases/tag/iOS-v4.6.0), install it into your app or Titanium module directory, then add:
+
+```xml
+<module platform="iphone" version="4.6.0">ti.draggable</module>
+```
+
+This iOS package requires Titanium SDK 13.2.0.GA or newer. The 4.6.0 additions apply to iOS; Android source is unchanged.
+
 ## Enhancements & Fixes
 
 - Improved drag performance for iOS and Android.
@@ -100,9 +115,16 @@ If `axis` is omitted, the view can move freely on both axes.
 
 ## Native Bottom-Sheet Handoff (iOS)
 
-Version 4.5.1 can coordinate a vertical draggable view with a descendant `Ti.UI.TableView`, `Ti.UI.ListView`, or `Ti.UI.ScrollView`. The inner scroll view scrolls while the sheet is expanded. A downward gesture first returns the inner content to its adjusted top offset, then transfers the same gesture to the draggable sheet without waiting for JavaScript.
+Version 4.6.0 can coordinate a vertical draggable view with a descendant `Ti.UI.TableView`, `Ti.UI.ListView`, or `Ti.UI.ScrollView`. The inner scroll view scrolls while the sheet is expanded. A downward gesture first returns the inner content to its adjusted top offset, then transfers the same gesture to the draggable sheet without waiting for JavaScript.
 
 ```javascript
+var Draggable = require('ti.draggable');
+var window = Ti.UI.createWindow({ backgroundColor: '#F3F2F8' });
+var rows = [];
+for (var index = 1; index <= 40; index++) {
+  rows.push({ title: 'Nearby place ' + index, height: 58 });
+}
+
 var tableView = Ti.UI.createTableView({
   top: 72,
   bottom: 0,
@@ -131,13 +153,16 @@ var sheet = Draggable.createView({
       collapsed: 700
     },
     initialDetent: 'collapsed',
+    collapsedBounce: { enabled: true },
     progressRanges: [
       { id: 'collapsedToMiddle', from: 'collapsed', to: 'middle' },
       { id: 'middleToExpanded', from: 'middle', to: 'expanded' }
     ],
     scrollHandoff: {
       view: tableView,
-      atTopBehavior: 'drag'
+      atTopBehavior: 'drag',
+      suppressScrollMomentum: true,
+      scrollEnabledByDetent: { collapsed: false, middle: true, expanded: true }
     },
     followers: [{
       view: mapButtons,
@@ -153,6 +178,7 @@ var sheet = Draggable.createView({
 sheet.add(tableView);
 window.add(mapButtons); // Followers should be siblings of the sheet.
 window.add(sheet);
+window.open();
 ```
 
 All scrolling, dragging, snapping, follower positioning, and fading occurs in UIKit. JavaScript can optionally observe interactive progress without driving the native motion.
@@ -173,6 +199,28 @@ sheet.draggable.setDetent('middle');
 sheet.draggable.setDetent('expanded', { animated: false });
 sheet.draggable.setDetent('expanded', { animated: true, updateProgress: true });
 ```
+
+### Collapsed Pull Resistance
+
+`collapsedBounce` optionally lets a vertical sheet stretch a short distance below its lowest (largest-top) detent. Resistance increases with finger travel, then a native spring returns the sheet to that same detent on release or cancellation. The return emits `releaseAction: 'bounce'` through the existing release/detent events. Followers move with the sheet and detent progress remains clamped to its configured ranges.
+
+```javascript
+sheet.draggable.setConfig('collapsedBounce', {
+  enabled: true,
+  maxDistance: 48,
+  resistance: 0.35,
+  duration: 0.32,
+  damping: 0.8
+});
+```
+
+- `enabled` (`Boolean`, default `false`) — Enables resistance and spring-back below the collapsed boundary. Requires configured detents.
+- `maxDistance` (`Number`, default `48`) — Maximum elastic travel in points; the sheet approaches this limit as the user pulls farther.
+- `resistance` (`Number`, default `0.35`, range `0.01–1`) — Initial fraction of finger movement applied to the sheet. Smaller values feel firmer; movement progressively decreases beyond that initial fraction.
+- `duration` (`Number`, default `0.32`) — Return spring duration in seconds.
+- `damping` (`Number`, default `0.8`, range `0.01–1`) — Return spring damping ratio.
+
+The option works with `scrollEnabledByDetent` and `suppressScrollMomentum`. It is ignored while `scrollHandoff.atTopBehavior` is `'dismiss'`. Other drag boundaries retain their existing constraints. Disable it at runtime with `sheet.draggable.setConfig('collapsedBounce.enabled', false)`.
 
 ### Detent Progress
 
@@ -206,6 +254,7 @@ Initial detent placement does not emit progress. Calling `setDetent()` without `
 sheet.draggable.setConfig('scrollHandoff.atTopBehavior', 'scroll');
 sheet.draggable.setConfig('scrollHandoff.atTopBehavior', 'drag');
 sheet.draggable.setConfig('scrollHandoff.atTopBehavior', 'dismiss');
+sheet.draggable.setConfig('scrollHandoff.suppressScrollMomentum', true);
 ```
 
 - `drag` (default) — A downward pull transfers from the inner content to the sheet when the content reaches its adjusted top offset.
@@ -213,8 +262,14 @@ sheet.draggable.setConfig('scrollHandoff.atTopBehavior', 'dismiss');
 - `dismiss` — Uses the same native handoff as `drag`, then targets `dismissDetent` and emits `dismiss` when the release passes `dismissThreshold` or `detentVelocityThreshold`.
 - `top` (`Number`) — Optional expanded sheet position used for handoff when no detents are configured. Otherwise the smallest detent or `minTop` is used.
 - `topTolerance` (`Number`, default `1`) — Content and sheet top-edge tolerance in points.
+- `suppressScrollMomentum` (`Boolean`, default `false`) — When an upward gesture that began inside the scrolling view is owned by the sheet and targets a higher detent, cancels the scrolling view's residual flick momentum and keeps its content at the adjusted top offset. Normal scrolling and deceleration remain unchanged when the scrolling view owns the gesture.
+- `scrollEnabledByDetent` (`Object`, optional) — Maps detent names to scrolling booleans. A `false` entry disables native scrolling and pins the content to its current adjusted top, including during a drag and release from that detent. Scrolling stays disabled until the destination settles; moving into a disabled detent locks it as settling begins. A `true` entry enables scrolling subject to the normal sheet handoff rules. Omitted names use the scrolling state captured before this policy took control.
 - `dismissThreshold` (`Number`, default `120`) — Downward distance required for the `dismiss` policy.
 - `dismissDetent` (`String`) — Named dismissal target. Defaults to the largest configured detent.
+
+With suppression enabled, the adjusted top is recalculated throughout the sheet's release animation and after final layout. This preserves UIKit's navigation-bar and safe-area positioning of the first row while the sheet continues expanding beneath the bars.
+
+For example, `scrollEnabledByDetent: { collapsed: false, middle: true, expanded: true }` keeps the table at its adjusted top while collapsed and throughout the transition out of collapsed. The destination's setting takes effect before `detentchange` fires. Update entries at runtime with `sheet.draggable.setConfig('scrollHandoff.scrollEnabledByDetent.collapsed', false)`. Remove the policy with `sheet.draggable.setConfig('scrollHandoff.scrollEnabledByDetent', null)` to restore the original native scrolling state; removing the handoff or gesture also restores it.
 
 The module does not remove the sheet automatically. Handle the `dismiss` event to close, hide, or recycle it after the native motion completes.
 
